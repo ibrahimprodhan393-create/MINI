@@ -7,21 +7,55 @@ class TelegramNotifier:
     def __init__(self) -> None:
         self.enabled = bool(settings.bot_token)
 
+    async def call_api(self, method: str, payload: dict) -> dict:
+        if not self.enabled:
+            return {"ok": False, "description": "BOT_TOKEN is not configured."}
+        url = f"https://api.telegram.org/bot{settings.bot_token}/{method}"
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            return response.json()
+
     async def send_message(self, chat_id: int, text: str) -> None:
         if not self.enabled or not chat_id:
             return
-        url = f"https://api.telegram.org/bot{settings.bot_token}/sendMessage"
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                await client.post(
-                    url,
-                    json={
-                        "chat_id": chat_id,
-                        "text": text,
-                        "parse_mode": "HTML",
-                        "disable_web_page_preview": True,
+            await self.call_api(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
+            )
+        except httpx.HTTPError:
+            return
+
+    async def send_web_app_button(self, chat_id: int) -> None:
+        if not self.enabled or not chat_id:
+            return
+        if not settings.public_app_url:
+            await self.send_message(chat_id, "Mini App URL is not configured yet.")
+            return
+        try:
+            await self.call_api(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": "Welcome to the store. Tap the button below to open the Mini App.",
+                    "reply_markup": {
+                        "inline_keyboard": [
+                            [
+                                {
+                                    "text": "Open Store",
+                                    "web_app": {"url": settings.public_app_url},
+                                }
+                            ]
+                        ]
                     },
-                )
+                },
+            )
         except httpx.HTTPError:
             return
 

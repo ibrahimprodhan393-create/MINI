@@ -52,6 +52,7 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
    BOT_TOKEN
    BOT_USERNAME
    MINI_APP_SHORT_NAME
+   TELEGRAM_WEBHOOK_SECRET
    ADMIN_TELEGRAM_IDS
    PUBLIC_APP_URL
    AUTO_MIGRATE=true
@@ -61,6 +62,20 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 6. Open the Render app once. With `AUTO_MIGRATE=true`, the app creates the Neon tables from `db/schema.sql`.
 
 7. Put the final Render URL in BotFather as the Mini App URL.
+
+8. Connect Telegram messages to Render by setting the webhook:
+
+   ```text
+   https://api.telegram.org/botYOUR_BOT_TOKEN/setWebhook?url=https://your-render-service.onrender.com/telegram/webhook
+   ```
+
+   Check it:
+
+   ```text
+   https://api.telegram.org/botYOUR_BOT_TOKEN/getWebhookInfo
+   ```
+
+   After this, `/start` in Telegram sends an **Open Store** Mini App button.
 
 ## Admin Access
 

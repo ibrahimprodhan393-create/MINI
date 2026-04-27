@@ -322,6 +322,40 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/telegram/webhook")
+async def telegram_webhook(
+    update: dict[str, Any],
+    x_telegram_bot_api_secret_token: Annotated[
+        str | None,
+        Header(alias="X-Telegram-Bot-Api-Secret-Token"),
+    ] = None,
+) -> dict[str, bool]:
+    if settings.telegram_webhook_secret:
+        if x_telegram_bot_api_secret_token != settings.telegram_webhook_secret:
+            raise HTTPException(status_code=403, detail="Invalid Telegram webhook secret.")
+
+    message = update.get("message") or update.get("edited_message")
+    if not message:
+        return {"ok": True}
+
+    chat_id = message.get("chat", {}).get("id")
+    text = (message.get("text") or "").strip()
+    if not chat_id:
+        return {"ok": True}
+
+    if text.startswith("/start") or text.startswith("/help"):
+        await notifier.send_web_app_button(chat_id)
+    else:
+        await notifier.send_message(chat_id, "Send /start to open the Mini App.")
+
+    return {"ok": True}
+
+
+@app.get("/telegram/webhook")
+async def telegram_webhook_status() -> dict[str, str]:
+    return {"status": "telegram webhook endpoint is ready"}
+
+
 @app.get("/api/session")
 async def session(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dict[str, Any]:
     return {"user": jsonable(user), "is_admin": bool(user["is_admin"])}
