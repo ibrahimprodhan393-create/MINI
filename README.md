@@ -47,6 +47,7 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 5. Add Render environment variables from `.env.example`:
 
    ```text
+   PYTHON_VERSION=3.12.4
    DATABASE_URL
    BOT_TOKEN
    BOT_USERNAME
