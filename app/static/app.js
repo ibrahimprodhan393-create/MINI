@@ -31,8 +31,10 @@ const state = {
   ticketMessages: [],
   supportSettings: null,
   resellerSettings: null,
+  branding: null,
   aiSettings: null,
   aiMessages: [],
+  aiLanguage: "",
   aiBusy: false,
   adminTab: "dashboard",
   admin: {},
@@ -86,6 +88,20 @@ function compactMoney(value) {
   return `${escapeHtml(currency.symbol)} ${converted.toFixed(2)}`;
 }
 
+function currencyIconName() {
+  const code = String(state.currency?.code || "USD").toUpperCase();
+  if (code === "EUR") return "euro";
+  if (code === "GBP") return "pound-sterling";
+  if (["INR", "NPR"].includes(code)) return "indian-rupee";
+  if (["RUB"].includes(code)) return "russian-ruble";
+  if (["BDT", "PKR", "IDR", "MYR", "AED", "SAR", "THB", "TRY", "PHP"].includes(code)) return "banknote";
+  return "dollar-sign";
+}
+
+function currencyIcon() {
+  return icon(currencyIconName());
+}
+
 function textMoney(value) {
   const currency = state.currency || { code: "USD", symbol: "$", rate_from_base: 1 };
   const converted = Number(value || 0) * Number(currency.rate_from_base || 1);
@@ -130,6 +146,12 @@ function paymentMethodTitle(method) {
   const name = String(method?.name || "Payment");
   if (String(method?.method_type || "").toLowerCase() === "auto" && !/auto/i.test(name)) return `${name} (Auto)`;
   return name;
+}
+
+function appLogoMarkup(sizeClass = "") {
+  const logo = state.branding?.logo_url || state.dashboard?.branding?.logo_url || "";
+  if (logo) return `<img class="app-logo ${sizeClass}" src="${escapeHtml(logo)}" alt="App logo" />`;
+  return `<span class="app-logo ${sizeClass}">${currencyIcon()}</span>`;
 }
 
 function statusBadge(status) {
@@ -252,6 +274,7 @@ async function loadDashboard() {
   state.currencies = state.dashboard.currencies || state.currencies || [];
   state.supportSettings = state.dashboard.support || state.supportSettings;
   state.resellerSettings = state.dashboard.reseller || state.resellerSettings;
+  state.branding = state.dashboard.branding || state.branding;
   state.aiSettings = state.dashboard.assistant || state.aiSettings;
   state.categories = state.dashboard.categories || [];
   state.products = state.dashboard.products || [];
@@ -270,6 +293,7 @@ async function loadRouteData(route = state.route) {
   if (route === "checkout") {
     const methods = await api("/api/payment-methods");
     state.methods = methods.methods || [];
+    if (!state.selectedPaymentMethodId && state.methods.length) state.selectedPaymentMethodId = state.methods[0].id;
   }
   if (route === "wallet") {
     const transactions = await api("/api/wallet/transactions");
@@ -284,6 +308,7 @@ async function loadRouteData(route = state.route) {
       api("/api/reseller-settings"),
     ]);
     state.methods = methods.methods || [];
+    if (!state.selectedPaymentMethodId && state.methods.length) state.selectedPaymentMethodId = state.methods[0].id;
     state.payments = payments.payments || [];
     state.transactions = transactions.transactions || [];
     state.supportSettings = support.support || state.supportSettings;
@@ -312,10 +337,10 @@ async function loadRouteData(route = state.route) {
     state.supportSettings = data.support || state.supportSettings;
   }
   if (route === "assistant") {
-    if (!state.aiMessages.length) {
+    if (state.aiLanguage && !state.aiMessages.length) {
       state.aiMessages = [{
         role: "assistant",
-        text: state.aiSettings?.intro || "Ask me anything about this Mini App.",
+        text: state.aiSettings?.intro || "ACI AI is ready. Ask anything about this Mini App.",
       }];
     }
   }
@@ -387,7 +412,7 @@ function topbar() {
   return `
     <header class="topbar">
       <div class="profile-chip">
-        <div class="avatar">${user.photo_url ? `<img src="${escapeHtml(user.photo_url)}" alt="${escapeHtml(name)}" />` : initials(name)}</div>
+        <div class="avatar">${appLogoMarkup("header-logo")}</div>
         <div>
           <h2>${escapeHtml(name)}</h2>
           <p>${state.session?.is_admin ? "ADMIN" : "CUSTOMER"}</p>
@@ -395,7 +420,7 @@ function topbar() {
       </div>
       <button class="balance-chip" data-action="set-route" data-route="profile" aria-label="Wallet balance">
         <span>Balance</span>
-        <strong>${icon("wallet")} ${icon("gem")} ${compactMoney(user.wallet_balance)}</strong>
+        <strong>${icon("wallet")} ${currencyIcon()} ${compactMoney(user.wallet_balance)}</strong>
       </button>
     </header>
   `;
@@ -407,7 +432,7 @@ function bottomNav() {
     ["orders", "Orders", "receipt-text"],
     ["wallet", "History", "history"],
     ["profile", "Account", "wallet-cards"],
-    ["assistant", "Sard", "bot"],
+    ["assistant", "ACI AI", "bot"],
   ];
   return `
     <nav class="bottom-nav">
@@ -598,42 +623,86 @@ function renderCheckout() {
   const amount = Number(priceFor(product, duration));
   const user = state.dashboard?.user || state.session?.user || {};
   const wallet = Number(user.wallet_balance || 0);
-  const selected = state.methods.find((method) => String(method.id) === String(state.selectedPaymentMethodId));
+  const selected = state.methods.find((method) => String(method.id) === String(state.selectedPaymentMethodId)) || state.methods[0] || null;
   return `
-    <section class="panel">
+    <section class="panel checkout-card">
       <div class="status-row">
-        <h3 style="margin:0;">Select Payment Method</h3>
+        <h3 style="margin:0;">Checkout</h3>
         <button class="icon-btn" data-action="open-product" data-id="${product.id}" type="button">${icon("x")}</button>
       </div>
-      <p class="muted">${escapeHtml(product.name)} - ${duration} Day</p>
-      <p class="muted">Price: <strong class="price">${money(amount)}</strong></p>
+      <div class="checkout-product">
+        ${productImage(product.image_url, product.name)}
+        <div>
+          <h3>${escapeHtml(product.name)}</h3>
+          <p>${duration} Day access</p>
+          <strong>${money(amount)}</strong>
+        </div>
+      </div>
       <button class="payment-option ${wallet >= amount ? "" : "disabled"}" data-action="wallet-pay" type="button">
         <span class="inline-icon">${icon("wallet")}</span>
         <span><strong>Wallet Pay</strong><small>Balance: ${money(wallet)}</small></span>
         <span class="badge ${wallet >= amount ? "success" : "danger"}">${wallet >= amount ? "Auto" : "Insufficient"}</span>
       </button>
     </section>
-    <section class="panel">
-      <div class="section-head"><h3>Manual Payment</h3></div>
-      <p class="muted">Select a payment method and submit transaction ID. Admin approval will create the order automatically.</p>
+    <section class="panel fund-invoice-card checkout-payment-card">
+      <div class="payment-step-title">
+        <span>${icon("smartphone")}</span>
+        <strong>Select Payment Method</strong>
+      </div>
+      <p class="muted">Active methods only. Admin approval will create the order automatically.</p>
       <div class="table-lite">
         ${state.methods.map((method) => `
           <button class="payment-option ${String(method.id) === String(state.selectedPaymentMethodId) ? "active" : ""}" data-action="select-payment-method" data-id="${method.id}" type="button">
             ${paymentMethodMark(method)}
             <span>
-              <strong>${escapeHtml(method.name)}</strong>
+              <strong>${escapeHtml(paymentMethodTitle(method))}</strong>
               <small>${escapeHtml(method.account_label || "Details")}: ${escapeHtml(method.account_value || method.instructions || "")}</small>
             </span>
+            <span class="account-chevron">${icon("chevron-right")}</span>
           </button>
         `).join("") || `<div class="empty">No payment methods</div>`}
       </div>
       ${selected ? `
-        <form class="form-grid" id="checkout-payment-form" style="margin-top:12px;">
+        <form class="payment-invoice form-grid" id="checkout-payment-form">
+          <input name="method_id" type="hidden" value="${escapeHtml(selected.id)}" />
+          <div class="invoice-notch"></div>
+          <div class="invoice-heading">Product Payment Invoice</div>
+          <div class="invoice-line">
+            <span>${currencyIcon()} Pay Amount</span>
+            <strong>${money(amount)}</strong>
+          </div>
+          <div class="invoice-line">
+            <span>${icon("package")} Product</span>
+            <strong>${escapeHtml(product.name)}</strong>
+          </div>
+          <div class="invoice-line">
+            <span>${icon("clock")} Duration</span>
+            <strong>${duration} Day</strong>
+          </div>
+          <div class="invoice-line">
+            <span>${icon("smartphone")} Method</span>
+            <strong>${escapeHtml(paymentMethodTitle(selected))}</strong>
+          </div>
+          <div class="payment-detail-card">
+            <div>
+              <small>${escapeHtml(selected.account_label || "Payment address")}</small>
+              <strong>${escapeHtml(selected.account_value || "Address not set")}</strong>
+            </div>
+            <button class="action-btn secondary copy-upi-btn" data-action="copy-payment-address" data-value="${escapeHtml(selected.account_value || "")}" type="button">
+              ${icon("copy")} Copy
+            </button>
+            ${selected.instructions ? `<p class="invoice-note">${escapeHtml(selected.instructions)}</p>` : ""}
+          </div>
           ${selected.qr_image_url ? `<img class="screenshot" src="${escapeHtml(selected.qr_image_url)}" alt="${escapeHtml(selected.name)} QR" />` : ""}
-          <div class="notice"><strong>${escapeHtml(selected.name)}</strong><p>${escapeHtml(selected.instructions || "")}</p></div>
-          <div class="field"><label>Transaction ID</label><input name="transaction_id" required autocomplete="off" /></div>
-          <div class="field"><label>Screenshot</label><input name="screenshot" type="file" accept="image/*" /></div>
-          <button class="action-btn" type="submit">${icon("send")} Submit Payment</button>
+          <div class="field"><label>Transaction ID / UTR</label><input name="transaction_id" required autocomplete="off" placeholder="Enter UTR or reference number" /></div>
+          <div class="field">
+            <label>Payment Screenshot</label>
+            <label class="upload-drop">
+              <input name="screenshot" type="file" accept="image/*" capture="environment" required />
+              <span>${icon("upload-cloud")} Click to upload screenshot</span>
+            </label>
+          </div>
+          <button class="action-btn submit-payment-btn" type="submit">${icon("check-circle")} Submit Product Payment (${money(amount)})</button>
         </form>
       ` : ""}
     </section>
@@ -682,18 +751,18 @@ function renderPaymentForm() {
         </div>
       </div>
       <div class="fund-method-tabs">
-        ${state.methods.slice(0, 2).map((method) => `
+        ${state.methods.map((method) => `
           <button class="fund-tab ${String(method.id) === String(selected.id) ? "active" : ""}" data-action="select-payment-method" data-id="${method.id}" type="button">
             ${paymentMethodMark(method)}
             <span>${escapeHtml(paymentMethodTitle(method))}</span>
           </button>
         `).join("")}
       </div>
-      <p class="muted strong-line">${icon("gem")} Manual payment - select amount:</p>
+      <p class="muted strong-line">${currencyIcon()} Manual payment - select amount:</p>
       <div class="fund-amount-grid">
         ${fundPresets.map((preset) => `
           <button class="fund-amount-card ${Number(amount) === Number(preset) ? "active" : ""}" data-action="start-fund-payment" data-amount="${preset}" type="button">
-            ${icon("gem")} ${preset}
+            ${currencyIcon()} ${preset}
           </button>
         `).join("")}
       </div>
@@ -723,7 +792,7 @@ function renderPaymentForm() {
         <div class="invoice-notch"></div>
         <div class="invoice-heading">Payment Invoice</div>
         <div class="invoice-line">
-          <span>${icon("gem")} Amount</span>
+          <span>${currencyIcon()} Amount</span>
           <strong>${escapeHtml(payAmount)}</strong>
         </div>
         <div class="invoice-line">
@@ -776,9 +845,15 @@ function renderOrders() {
 
 function renderReferral() {
   const data = state.referrals || {};
+  const summary = data.summary || {};
   return `
     <div class="section-head"><h3>Referral</h3><button data-action="set-route" data-route="profile">Back</button></div>
     <section class="panel form-grid">
+      <div class="referral-stat-grid">
+        <div class="metric"><span>Total referrals</span><strong>${summary.total_referrals || 0}</strong></div>
+        <div class="metric"><span>Total earned</span><strong>${money(summary.total_earned)}</strong></div>
+        <div class="metric"><span>Pending earn</span><strong>${money(summary.pending_earned)}</strong></div>
+      </div>
       <div class="field">
         <label>Your referral link</label>
         <input value="${escapeHtml(data.referral_link || data.referral_code || "")}" readonly />
@@ -803,10 +878,10 @@ function renderSpin() {
   const canSpin = Number(data.spins_left || 0) > 0;
   const segments = prizes.length ? prizes.slice(0, 8) : [
     { title: "Try Again", amount: 0 },
+    { title: "0.01", amount: 0.01 },
+    { title: "0.02", amount: 0.02 },
+    { title: "0.03", amount: 0.03 },
     { title: "0.05", amount: 0.05 },
-    { title: "0.10", amount: 0.1 },
-    { title: "0.25", amount: 0.25 },
-    { title: "0.50", amount: 0.5 },
   ];
   return `
     <div class="section-head"><h3>Lucky Spin</h3><button data-action="set-route" data-route="profile">Back</button></div>
@@ -822,7 +897,7 @@ function renderSpin() {
           `).join("")}
         </div>
       </div>
-      <p class="muted">Max bonus: ${money(data.max_bonus ?? 0.5)}</p>
+      <p class="muted">Max bonus: ${money(data.max_bonus ?? 0.05)}</p>
       <p class="muted">${canSpin ? "Spin available now" : `Next spin: ${shortDate(data.next_spin_at)}`}</p>
       ${state.spinResult ? `
         <div class="notice spin-result">
@@ -927,22 +1002,46 @@ function renderSupport() {
 }
 
 function renderAssistant() {
+  if (!state.aiLanguage) {
+    return `
+      <div class="section-head"><h3>ACI AI</h3><button data-action="set-route" data-route="profile">Back</button></div>
+      <section class="assistant-panel">
+        <div class="assistant-header">
+          <span class="account-row-icon">${icon("bot")}</span>
+          <div>
+            <h3>Select AI Language</h3>
+            <p>Choose a language first, then ask your question. ACI AI answers in English.</p>
+          </div>
+        </div>
+        <div class="ai-language-grid">
+          ${languageOptions.map(([code, label]) => `
+            <button type="button" data-action="set-ai-language" data-language="${escapeHtml(code)}">${escapeHtml(label)}</button>
+          `).join("")}
+        </div>
+      </section>
+      <section class="close-app-section">
+        <button class="action-btn secondary close-app-btn" data-action="close-app" type="button">${icon("x")} Close App</button>
+      </section>
+    `;
+  }
   const messages = state.aiMessages.length ? state.aiMessages : [{
     role: "assistant",
-    text: state.aiSettings?.intro || "Ask me anything about this Mini App.",
+    text: state.aiSettings?.intro || "ACI AI is ready. Ask anything about this Mini App.",
   }];
   const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant");
-  const suggestions = latestAssistant?.suggestions || ["Add fund কিভাবে করব?", "আমার অর্ডার কোথায়?", "Daily spin কখন পাব?", "Support কোথায়?"];
+  const suggestions = latestAssistant?.suggestions || ["How do I add funds?", "Where is my order?", "Daily spin reward", "Contact support"];
   return `
-    <div class="section-head"><h3>AI Assistant</h3><button data-action="set-route" data-route="profile">Back</button></div>
+    <div class="section-head"><h3>ACI AI</h3><button data-action="set-route" data-route="profile">Back</button></div>
     <section class="assistant-panel">
       <div class="assistant-header">
         <span class="account-row-icon">${icon("sparkles")}</span>
         <div>
-          <h3>Mini App AI</h3>
+          <h3>ACI AI</h3>
           <p>Wallet, payment, order, spin, referral, support, reseller, product and admin questions</p>
+          <small>Language: ${escapeHtml(languageOptions.find(([code]) => code === state.aiLanguage)?.[1] || "English")}</small>
         </div>
       </div>
+      <button class="action-btn secondary" data-action="reset-ai-language" type="button">${icon("languages")} Change AI Language</button>
       <div class="assistant-chat">
         ${messages.map((message) => `
           <div class="chat-bubble ${message.role === "user" ? "user" : "assistant"}">
@@ -955,7 +1054,7 @@ function renderAssistant() {
         ${suggestions.map((suggestion) => `<button type="button" data-action="ai-suggestion" data-message="${escapeHtml(suggestion)}">${escapeHtml(suggestion)}</button>`).join("")}
       </div>
       <form class="assistant-form" id="ai-chat-form">
-        <input name="message" placeholder="Ask a question..." autocomplete="off" required />
+        <input name="message" placeholder="Ask a question in any language..." autocomplete="off" required />
         <button class="action-btn" type="submit" ${state.aiBusy ? "disabled" : ""}>${icon("send")}</button>
       </form>
     </section>
@@ -971,10 +1070,10 @@ function renderSpinInline() {
   const canSpin = Number(data.spins_left || 0) > 0;
   const segments = prizes.length ? prizes.slice(0, 8) : [
     { title: "Try Again", amount: 0 },
+    { title: "0.01", amount: 0.01 },
+    { title: "0.02", amount: 0.02 },
+    { title: "0.03", amount: 0.03 },
     { title: "0.05", amount: 0.05 },
-    { title: "0.10", amount: 0.1 },
-    { title: "0.25", amount: 0.25 },
-    { title: "0.50", amount: 0.5 },
   ];
   return `
     <section class="panel inline-account-card spin-panel compact-spin-card" id="daily-spin-panel">
@@ -982,7 +1081,7 @@ function renderSpinInline() {
         <span class="account-row-icon">${icon("rotate-cw")}</span>
         <div>
           <h3>Daily Spinner</h3>
-          <p>One spin every 24 hours. Max bonus ${money(data.max_bonus ?? 0.5)}.</p>
+          <p>One spin every 24 hours. Max bonus ${money(data.max_bonus ?? 0.05)}.</p>
         </div>
       </div>
       <div class="spin-stage small">
@@ -1033,14 +1132,20 @@ function renderLanguageInline(selectedLanguage) {
 
 function renderReferralInline() {
   const data = state.referrals || {};
+  const summary = data.summary || {};
   return `
     <section class="panel inline-account-card form-grid">
       <div class="card-title">
         <span class="account-row-icon">${icon("share-2")}</span>
         <div>
           <h3>Referral Program</h3>
-          <p>Invite new users and earn bonus after a valid join.</p>
+          <p>Invite new users. You earn ${money(data.bonus_per_referral ?? 0.05)} for every valid referral.</p>
         </div>
+      </div>
+      <div class="referral-stat-grid">
+        <div class="metric"><span>Total referrals</span><strong>${summary.total_referrals || 0}</strong></div>
+        <div class="metric"><span>Total earned</span><strong>${money(summary.total_earned)}</strong></div>
+        <div class="metric"><span>Pending earn</span><strong>${money(summary.pending_earned)}</strong></div>
       </div>
       <div class="field">
         <label>Your referral link</label>
@@ -1131,11 +1236,11 @@ function renderAssistantEntryInline() {
     <section class="panel inline-account-card support-card ai-entry-card">
       <div class="support-icon">${icon("sparkles")}</div>
       <div>
-        <h3>AI Assistant</h3>
-        <p>Ask in any language about payment, wallet, orders, products, spin, referral, reseller, support, or admin rules.</p>
-        <small>Multi-language help</small>
+        <h3>ACI AI</h3>
+        <p>Select AI language first, then ask about payment, wallet, orders, products, spin, referral, reseller, support, or admin rules.</p>
+        <small>Answers in English</small>
       </div>
-      <button class="action-btn" data-action="set-route" data-route="assistant" type="button">${icon("bot")} Open Assistant</button>
+      <button class="action-btn" data-action="set-route" data-route="assistant" type="button">${icon("bot")} Open ACI AI</button>
     </section>
   `;
 }
@@ -1234,6 +1339,8 @@ function renderAdminDashboard() {
       <div class="metric"><span>Pending payments</span><strong>${stats.pending_payments || 0}</strong></div>
       <div class="metric"><span>Active subscriptions</span><strong>${stats.active_subscriptions || 0}</strong></div>
       <div class="metric"><span>Today's sales</span><strong>${money(stats.todays_sales)}</strong></div>
+      <div class="metric"><span>Total referrals</span><strong>${stats.total_referrals || 0}</strong></div>
+      <div class="metric"><span>Referral bonus</span><strong>${money(stats.total_referral_bonus)}</strong></div>
     </section>
     <div class="section-head"><h3>Recent Orders</h3></div>
     <section class="table-lite">
@@ -1494,6 +1601,8 @@ function renderAdminUsers() {
           <div class="status-row"><h4>${escapeHtml(userName(user))}</h4>${user.is_banned ? `<span class="badge danger">Banned</span>` : `<span class="badge success">Active</span>`}</div>
           <div class="muted">@${escapeHtml(user.username || "-")} - ID ${escapeHtml(user.telegram_id)}</div>
           <div class="muted">Balance ${money(user.wallet_balance)} - Orders ${user.order_count} - Payments ${user.payment_count}</div>
+          <div class="muted">Referrals ${user.referral_count || 0} - Earned ${money(user.referral_earned)} - Pending ${money(user.referral_pending)}</div>
+          <div class="muted">Referred by: ${user.referred_by_telegram_id ? `${escapeHtml(user.referred_by_telegram_id)} ${user.referred_by_username ? `(@${escapeHtml(user.referred_by_username)})` : ""}` : "Direct join"}</div>
           <div class="two-col">
             <button class="action-btn secondary" data-action="add-balance" data-id="${user.id}" type="button">${icon("plus")} Add Balance</button>
             <button class="action-btn danger" data-action="remove-balance" data-id="${user.id}" type="button">${icon("minus")} Remove</button>
@@ -1547,7 +1656,21 @@ function renderAdminSupport() {
   const support = state.admin.support?.support || {};
   const reseller = state.admin.support?.reseller || {};
   const assistant = state.admin.support?.assistant || {};
+  const branding = state.admin.support?.branding || {};
   return `
+    <div class="section-head"><h3>App Logo</h3></div>
+    <form class="panel form-grid" id="admin-branding-settings-form">
+      <div class="field">
+        <label>Logo URL</label>
+        <input name="logo_url" value="${escapeHtml(branding.logo_url || "")}" />
+      </div>
+      <div class="field">
+        <label>Logo Upload</label>
+        <input name="logo_file" type="file" accept="image/*" />
+      </div>
+      ${branding.logo_url ? `<img class="app-logo-preview" src="${escapeHtml(branding.logo_url)}" alt="App logo" />` : ""}
+      <button class="action-btn" type="submit">${icon("save")} Save App Logo</button>
+    </form>
     <div class="section-head"><h3>Support Contact</h3></div>
     <form class="panel form-grid" id="admin-support-settings-form">
       <div class="field">
@@ -1602,11 +1725,11 @@ function renderAdminSupport() {
       </div>
       <button class="action-btn" type="submit">${icon("save")} Save Reseller</button>
     </form>
-    <div class="section-head"><h3>AI Assistant</h3></div>
+    <div class="section-head"><h3>ACI AI</h3></div>
     <form class="panel form-grid" id="admin-assistant-settings-form">
       <div class="field">
         <label>Intro message</label>
-        <textarea name="intro" required>${escapeHtml(assistant.intro || "Ask me anything about this Mini App.")}</textarea>
+        <textarea name="intro" required>${escapeHtml(assistant.intro || "ACI AI is ready. Ask anything about this Mini App.")}</textarea>
       </div>
       <div class="field">
         <label>Custom knowledge</label>
@@ -1619,7 +1742,7 @@ function renderAdminSupport() {
           <option value="false" ${assistant.enabled === false ? "selected" : ""}>Inactive</option>
         </select>
       </div>
-      <button class="action-btn" type="submit">${icon("save")} Save AI Assistant</button>
+      <button class="action-btn" type="submit">${icon("save")} Save ACI AI</button>
     </form>
   `;
 }
@@ -1767,7 +1890,7 @@ async function sendAssistantMessage(message) {
   try {
     const result = await api("/api/assistant/chat", {
       method: "POST",
-      body: { message: clean },
+      body: { message: clean, language: state.aiLanguage || "en" },
     });
     state.aiMessages.push({
       role: "assistant",
@@ -1871,6 +1994,19 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "ai-suggestion") {
       await sendAssistantMessage(button.dataset.message || "");
+    }
+    if (action === "set-ai-language") {
+      state.aiLanguage = button.dataset.language || "en";
+      state.aiMessages = [{
+        role: "assistant",
+        text: state.aiSettings?.intro || "ACI AI is ready. Ask anything about this Mini App.",
+      }];
+      render();
+    }
+    if (action === "reset-ai-language") {
+      state.aiLanguage = "";
+      state.aiMessages = [];
+      render();
     }
     if (action === "copy-payment-address") {
       const value = button.dataset.value || "";
@@ -2117,7 +2253,7 @@ document.addEventListener("submit", async (event) => {
         method: "POST",
         body: {
           amount: Number(priceFor(product, state.selectedDuration)),
-          method_id: Number(state.selectedPaymentMethodId),
+          method_id: Number(data.get("method_id") || state.selectedPaymentMethodId),
           transaction_id: data.get("transaction_id"),
           screenshot_data: screenshot || null,
           product_id: product.id,
@@ -2296,7 +2432,22 @@ document.addEventListener("submit", async (event) => {
       state.admin.support = result;
       state.supportSettings = result.support;
       state.resellerSettings = result.reseller || state.resellerSettings;
+      state.branding = result.branding || state.branding;
       toast("Supporter saved");
+      render();
+    }
+    if (form.id === "admin-branding-settings-form") {
+      event.preventDefault();
+      const data = new FormData(form);
+      const logoFromFile = await fileToDataUrl(data.get("logo_file"));
+      const result = await api("/api/admin/branding-settings", {
+        method: "POST",
+        body: { logo_url: logoFromFile || data.get("logo_url") || "" },
+      });
+      state.admin.support = result;
+      state.branding = result.branding;
+      if (state.dashboard) state.dashboard.branding = result.branding;
+      toast("App logo saved");
       render();
     }
     if (form.id === "admin-reseller-settings-form") {
@@ -2314,6 +2465,7 @@ document.addEventListener("submit", async (event) => {
       });
       state.admin.support = result;
       state.resellerSettings = result.reseller;
+      state.branding = result.branding || state.branding;
       toast("Reseller contact saved");
       render();
     }
@@ -2323,7 +2475,7 @@ document.addEventListener("submit", async (event) => {
       const result = await api("/api/admin/assistant-settings", {
         method: "POST",
         body: {
-          intro: data.get("intro") || "Ask me anything about this Mini App.",
+          intro: data.get("intro") || "ACI AI is ready. Ask anything about this Mini App.",
           custom_knowledge: data.get("custom_knowledge") || "",
           enabled: data.get("enabled") === "true",
         },
@@ -2333,8 +2485,9 @@ document.addEventListener("submit", async (event) => {
         intro: result.assistant?.intro,
         enabled: result.assistant?.enabled,
       };
+      state.branding = result.branding || state.branding;
       state.aiMessages = [];
-      toast("AI Assistant saved");
+      toast("ACI AI saved");
       render();
     }
     if (form.classList.contains("admin-ticket-reply-form")) {

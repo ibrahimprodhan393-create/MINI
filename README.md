@@ -12,10 +12,9 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 - Product details: image, name, feature panel, video/YouTube embed, panel link, stock, 1/7/30 day prices, coupon, buy
 - Product key store: admins upload/delete 1 Day, 7 Days, and 30 Days keys, file links, or panel login lines per product
 - Wallet: add balance request, payment method, transaction ID, screenshot upload
-- Account screen: add fund, payment details, payment request status, daily spin, language, referral, support, profile, currency, reseller apply
+- Account screen: add fund, payment details, payment request status, realistic daily spin, language, referral dashboard, support, profile, currency, reseller apply
 - Add Fund shows admin payment methods as selectable cards, opens payment address/details with copy button, then submits amount and screenshot
-- Account screen uses compact action rows for Add Fund, AI Assistant, Daily Spin, Language, Referral, Promo Code, Support, Profile/Currency, and Reseller
-- AI Assistant chat answers Mini App questions about wallet, payment, orders, products, spin, referral, support, reseller, currency, language, and admin usage
+- ACI AI asks users to select an AI language first, then answers Mini App questions in English
 - AI Assistant reads payment history from `payment_requests`, the same table used by wallet payment submissions
 - AI Assistant has a safe fallback answer if optional history queries fail on an older database
 - AI Assistant has built-in answers even without custom knowledge; admin custom knowledge can still override or extend answers
@@ -27,18 +26,18 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 - Rejected payments can be removed from the admin panel
 - Automatic delivery: if a stored key is available, paid orders are delivered instantly
 - Automatic delivery picks the stored key from the matching 1/7/30 day bucket
-- Admin payment method editor: name, instructions, account details, QR image, active/off
+- Admin payment method editor: name, instructions, account details, logo, QR image, active/off
 - Payment methods support custom names, active/off status, logo upload/URL, QR image, and user-side display only when active
 - Orders: invoice ID, pending, approved, delivered, cancelled, refund on cancel
-- Referral link and bonus wallet credit for new user joins
+- Referral link gives $0.05 wallet credit for valid new user joins, with total referrals, total earned, and pending earned
 - Coupons: percent or fixed discount, expiry, max usage
-- Lucky spin with max 0.50 wallet bonus and one spin every 24 hours per user
+- Lucky spin with max 0.05 wallet bonus and one spin every 24 hours per user
 - Language selector in account: English, Bangla, Hindi, Urdu, Arabic, Indonesian, Malay, Nepali, Filipino, Russian, Thai, Turkish
 - Multi-currency selector in profile: AED, BDT, EUR, GBP, IDR, INR, MYR, NPR, PHP, PKR, RUB, SAR, THB, TRY, USD
 - Support page with admin-configurable Telegram inbox button and support tickets with admin replies
 - Admin-configurable reseller Telegram contact for the Apply for Reseller button
 - Telegram notifications for payments, orders, delivery, support
-- Admin dashboard, sections, products, key store, orders, payments, users, coupons, supporter/reseller/AI settings, tickets, broadcast
+- Admin dashboard, sections, products, key store, orders, payments, users, coupons, app logo, supporter/reseller/ACI AI settings, tickets, broadcast
 
 ## Deploy To Neon And Render
 

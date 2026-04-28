@@ -33,6 +33,7 @@ body {
   color: var(--text);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: 0;
+  scroll-behavior: smooth;
 }
 
 body {
@@ -200,6 +201,29 @@ main {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.app-logo {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  object-fit: cover;
+  border-radius: inherit;
+}
+
+.app-logo svg {
+  width: 28px;
+  height: 28px;
+}
+
+.app-logo-preview {
+  width: 82px;
+  height: 82px;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  object-fit: cover;
+  background: #101118;
 }
 
 .profile-chip h2,
@@ -506,6 +530,12 @@ main {
   margin-bottom: 18px;
 }
 
+@media (min-width: 390px) {
+  .fund-method-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .fund-tab {
   min-height: 88px;
   border: 1px solid rgba(255, 49, 72, 0.22);
@@ -518,6 +548,13 @@ main {
   padding: 10px;
   font-weight: 950;
   font-size: 15px;
+}
+
+.fund-tab span:last-child {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .fund-tab:nth-child(even) {
@@ -681,6 +718,40 @@ main {
   background: linear-gradient(135deg, #20c58f, #27d3a5);
 }
 
+.checkout-card,
+.checkout-payment-card {
+  display: grid;
+  gap: 12px;
+}
+
+.checkout-product {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 10px;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.checkout-product h3,
+.checkout-product p {
+  margin: 0;
+}
+
+.checkout-product p {
+  color: var(--muted);
+  margin-top: 5px;
+}
+
+.checkout-product strong {
+  color: var(--success);
+  display: block;
+  margin-top: 7px;
+  font-size: 18px;
+}
+
 .compact-spin-card .spin-stage.small {
   max-width: 240px;
   margin: 0 auto;
@@ -706,6 +777,36 @@ main {
 .reseller-button {
   background: linear-gradient(135deg, #ffc21b, #ffad00);
   color: #11131b;
+}
+
+.referral-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.referral-stat-grid .metric {
+  min-height: 78px;
+  padding: 10px;
+}
+
+.referral-stat-grid .metric strong {
+  font-size: 17px;
+}
+
+.ai-language-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.ai-language-grid button {
+  min-height: 48px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: linear-gradient(145deg, rgba(26, 28, 39, 0.98), rgba(12, 13, 20, 0.98));
+  color: var(--text);
+  font-weight: 900;
 }
 
 .close-app-section {
@@ -983,6 +1084,8 @@ main {
 
 .panel {
   padding: 16px;
+  content-visibility: auto;
+  contain-intrinsic-size: 220px;
 }
 
 .detail-hero {
@@ -1276,6 +1379,8 @@ main {
   margin: 4px auto 18px;
   display: grid;
   place-items: center;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.08), transparent 66%);
 }
 
 .spin-pointer {
@@ -1288,8 +1393,20 @@ main {
   transform: translateX(-50%);
   border-left: 15px solid transparent;
   border-right: 15px solid transparent;
-  border-top: 28px solid var(--warning);
+  border-top: 30px solid #ffd15c;
   filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.45));
+}
+
+.spin-pointer::after {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: -27px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: white;
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.55);
 }
 
 .spin-wheel {
@@ -1302,28 +1419,34 @@ main {
   position: relative;
   overflow: hidden;
   background:
-    conic-gradient(from -18deg, #ff3148 0 45deg, #151721 45deg 90deg, #ffb84b 90deg 135deg, #202331 135deg 180deg, #35d37e 180deg 225deg, #111827 225deg 270deg, #ff5264 270deg 315deg, #262a38 315deg 360deg);
-  border: 8px solid rgba(255, 255, 255, 0.08);
-  box-shadow: inset 0 0 0 3px rgba(0, 0, 0, 0.28), 0 20px 50px rgba(255, 49, 72, 0.22);
-  transition: transform 1.8s cubic-bezier(0.12, 0.86, 0.24, 1);
+    radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.2) 0 9%, transparent 10%),
+    conic-gradient(from -18deg, #ff3148 0 45deg, #171927 45deg 90deg, #ffb84b 90deg 135deg, #232637 135deg 180deg, #22c58e 180deg 225deg, #111827 225deg 270deg, #ff5264 270deg 315deg, #2b3042 315deg 360deg);
+  border: 10px solid rgba(255, 255, 255, 0.09);
+  box-shadow:
+    inset 0 0 0 4px rgba(0, 0, 0, 0.32),
+    inset 0 0 38px rgba(255, 255, 255, 0.08),
+    0 22px 54px rgba(255, 49, 72, 0.24);
+  transition: transform 2.4s cubic-bezier(0.08, 0.82, 0.14, 1);
+  will-change: transform;
 }
 
 .spin-wheel.spinning {
-  transform: rotate(1440deg);
+  transform: rotate(1800deg);
 }
 
 .spin-wheel::after {
-  content: "SPIN";
-  width: 82px;
-  height: 82px;
+  content: "$";
+  width: 78px;
+  height: 78px;
   border-radius: 999px;
   display: grid;
   place-items: center;
-  background: #101118;
+  background: radial-gradient(circle at 35% 28%, #ffffff, #ffdf79 24%, #f2a600 72%);
   color: white;
   font-weight: 900;
-  border: 6px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+  font-size: 30px;
+  border: 7px solid rgba(12, 13, 20, 0.92);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.36), inset 0 0 18px rgba(255, 255, 255, 0.45);
 }
 
 .spin-label {

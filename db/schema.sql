@@ -299,9 +299,10 @@ insert into app_settings (key, value) values
     ('reseller_telegram_user_id', ''),
     ('reseller_note', 'Apply for reseller pricing through Telegram.'),
     ('reseller_enabled', 'true'),
-    ('ai_assistant_intro', 'Ask me anything about wallet, payment, orders, products, spin, referral, support, reseller, currency, and account settings.'),
+    ('ai_assistant_intro', 'ACI AI is ready. Ask anything about wallet, payment, orders, products, spin, referral, support, reseller, currency, and account settings.'),
     ('ai_assistant_custom_knowledge', ''),
-    ('ai_assistant_enabled', 'true')
+    ('ai_assistant_enabled', 'true'),
+    ('app_logo_url', '')
 on conflict (key) do nothing;
 
 insert into payment_methods (name, instructions, method_type, account_label, account_value, sort_order)
@@ -330,11 +331,11 @@ select 'Try Again', 0, 50, 10 where not exists (select 1 from spin_prizes where 
 insert into spin_prizes (title, amount, weight, sort_order)
 select 'Small Bonus', 0.05, 25, 20 where not exists (select 1 from spin_prizes where title = 'Small Bonus');
 insert into spin_prizes (title, amount, weight, sort_order)
-select 'Wallet Bonus', 0.10, 15, 30 where not exists (select 1 from spin_prizes where title = 'Wallet Bonus');
+select 'Wallet Bonus', 0.02, 15, 30 where not exists (select 1 from spin_prizes where title = 'Wallet Bonus');
 insert into spin_prizes (title, amount, weight, sort_order)
-select 'Lucky Reward', 0.25, 8, 40 where not exists (select 1 from spin_prizes where title = 'Lucky Reward');
+select 'Lucky Reward', 0.03, 8, 40 where not exists (select 1 from spin_prizes where title = 'Lucky Reward');
 insert into spin_prizes (title, amount, weight, sort_order)
-select 'Mega Reward', 0.50, 2, 50 where not exists (select 1 from spin_prizes where title = 'Mega Reward');
+select 'Mega Reward', 0.05, 2, 50 where not exists (select 1 from spin_prizes where title = 'Mega Reward');
 
 with duplicates as (
     select duplicate.id as duplicate_id, keeper.id as keeper_id
@@ -354,7 +355,7 @@ where duplicate.title = keeper.title
 
 update spin_prizes set amount = 0, weight = 50, sort_order = 10 where title = 'Try Again';
 update spin_prizes set amount = 0.05, weight = 25, sort_order = 20 where title = 'Small Bonus';
-update spin_prizes set amount = 0.10, weight = 15, sort_order = 30 where title = 'Wallet Bonus';
-update spin_prizes set amount = 0.25, weight = 8, sort_order = 40 where title = 'Lucky Reward';
-update spin_prizes set amount = 0.50, weight = 2, sort_order = 50 where title = 'Mega Reward';
-update spin_prizes set amount = least(amount, 0.50);
+update spin_prizes set amount = 0.02, weight = 15, sort_order = 30 where title = 'Wallet Bonus';
+update spin_prizes set amount = 0.03, weight = 8, sort_order = 40 where title = 'Lucky Reward';
+update spin_prizes set amount = 0.05, weight = 2, sort_order = 50 where title = 'Mega Reward';
+update spin_prizes set amount = least(amount, 0.05);

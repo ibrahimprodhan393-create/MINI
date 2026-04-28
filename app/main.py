@@ -97,6 +97,7 @@ class LanguageSelectIn(BaseModel):
 
 class AssistantChatIn(BaseModel):
     message: str = Field(min_length=1, max_length=1000)
+    language: str = "en"
 
 
 class SupportSettingsIn(BaseModel):
@@ -119,6 +120,10 @@ class AiAssistantSettingsIn(BaseModel):
     intro: str = Field(default="Ask me anything about this Mini App.", min_length=1, max_length=300)
     custom_knowledge: str = Field(default="", max_length=5000)
     enabled: bool = True
+
+
+class BrandingSettingsIn(BaseModel):
+    logo_url: str = Field(default="", max_length=1000000)
 
 
 class ProductIn(BaseModel):
@@ -250,7 +255,7 @@ def price_field(duration_days: int) -> str:
     return {1: "price_1_day", 7: "price_7_days", 30: "price_30_days"}[duration_days]
 
 
-MAX_SPIN_BONUS = Decimal("0.50")
+MAX_SPIN_BONUS = Decimal("0.05")
 
 
 SUPPORT_SETTING_DEFAULTS = {
@@ -270,9 +275,13 @@ RESELLER_SETTING_DEFAULTS = {
 }
 
 AI_ASSISTANT_SETTING_DEFAULTS = {
-    "ai_assistant_intro": "Ask me anything about wallet, payment, orders, products, spin, referral, support, reseller, currency, and account settings.",
+    "ai_assistant_intro": "ACI AI is ready. Ask anything about wallet, payment, orders, products, spin, referral, support, reseller, currency, and account settings.",
     "ai_assistant_custom_knowledge": "",
     "ai_assistant_enabled": "true",
+}
+
+BRANDING_SETTING_DEFAULTS = {
+    "app_logo_url": "",
 }
 
 
@@ -333,6 +342,15 @@ async def fetch_ai_assistant_settings(conn: asyncpg.Connection) -> dict[str, Any
         "custom_knowledge": values["ai_assistant_custom_knowledge"].strip(),
         "enabled": values["ai_assistant_enabled"].lower() == "true",
     }
+
+
+async def fetch_branding_settings(conn: asyncpg.Connection) -> dict[str, Any]:
+    rows = await conn.fetch(
+        "select key, value from app_settings where key = any($1::text[])",
+        list(BRANDING_SETTING_DEFAULTS.keys()),
+    )
+    values = BRANDING_SETTING_DEFAULTS | {row["key"]: row["value"] for row in rows}
+    return {"logo_url": values["app_logo_url"].strip()}
 
 
 async def save_app_settings(conn: asyncpg.Connection, payload: dict[str, str]) -> None:
@@ -479,6 +497,115 @@ def built_in_general_answer(message: str) -> tuple[str, list[str]]:
     )
 
 
+def english_assistant_answer(
+    message: str,
+    *,
+    user: asyncpg.Record,
+    currency: asyncpg.Record | None,
+    stats: asyncpg.Record,
+    payments: list[asyncpg.Record],
+    orders: list[asyncpg.Record],
+    methods: list[asyncpg.Record],
+    categories: list[asyncpg.Record],
+    products: list[asyncpg.Record],
+    support: dict[str, Any],
+    reseller: dict[str, Any],
+    ai_settings: dict[str, Any],
+) -> tuple[str, list[str]]:
+    custom_answer = custom_knowledge_answer(message, ai_settings.get("custom_knowledge") or "")
+    suggestions = ["How do I add funds?", "Where is my order?", "How does daily spin work?", "Contact support"]
+    if custom_answer:
+        return (custom_answer, suggestions)
+
+    method_names = ", ".join(method["name"] for method in methods) or "no active payment method is available"
+    category_names = ", ".join(category["name"] for category in categories[:8]) or "no active section is available yet"
+    product_names = ", ".join(product["name"] for product in products[:6]) or "no active product is available yet"
+    latest_order = orders[0] if orders else None
+    latest_payment = payments[0] if payments else None
+    pending_payments = sum(1 for payment in payments if payment["status"] == "pending")
+    pending_orders = sum(1 for order in orders if order["status"] == "pending")
+    wallet = assistant_money(user["wallet_balance"], currency)
+    support_contact = (
+        f"@{support['telegram_username']}"
+        if support.get("telegram_username")
+        else f"ID {support['telegram_user_id']}" if support.get("telegram_user_id") else "not set"
+    )
+    reseller_contact = (
+        f"@{reseller['telegram_username']}"
+        if reseller.get("telegram_username")
+        else f"ID {reseller['telegram_user_id']}" if reseller.get("telegram_user_id") else "not set"
+    )
+    lower = message.lower()
+
+    if contains_any(lower, ("balance", "wallet", "money", "credit")):
+        return (
+            f"Your current wallet balance is {wallet}. To add money, open Account > Add Funds, choose an active payment method, copy the payment address, submit the amount, transaction ID, and screenshot. Admin approval will add the balance.",
+            suggestions,
+        )
+    if contains_any(lower, ("add fund", "addfund", "deposit", "payment", "pay", "bkash", "nagad", "screenshot", "utr", "transaction")):
+        detail = f"Active payment methods: {method_names}."
+        if latest_payment:
+            detail += f" Your latest payment request was {assistant_money(latest_payment['amount'], currency)} with status {latest_payment['status']}."
+        if pending_payments:
+            detail += f" You have {pending_payments} pending payment request(s)."
+        return (
+            f"Payment flow: choose an active method card such as bKash, Nagad, USDT, or another method set by admin. Copy the address/number, pay outside the app, then submit amount, transaction ID/UTR, and screenshot. {detail}",
+            ["Show active payment methods", "Payment is pending", "How to copy payment address?"],
+        )
+    if contains_any(lower, ("order", "invoice", "delivery", "key", "checkout", "buy", "purchase")):
+        detail = f"You have {stats['total_orders'] or 0} total order(s) and {stats['active_subscriptions'] or 0} active subscription(s)."
+        if latest_order:
+            detail += f" Latest order: {latest_order['invoice_id']} for {latest_order['product_name'] or 'Product'} is {latest_order['status']}."
+        if pending_orders:
+            detail += f" Pending order count: {pending_orders}."
+        return (
+            f"Checkout supports Wallet Pay and manual payment. If you use manual payment, the order will be created automatically after admin approves the payment request. {detail}",
+            ["Where is my delivery key?", "Wallet pay", "Manual checkout payment"],
+        )
+    if contains_any(lower, ("product", "category", "section", "panel", "android", "iphone", "pc")):
+        return (
+            f"Open Shop to browse sections. Current sections: {category_names}. Recent products: {product_names}. Product details show image, description, duration, price, stock, and checkout.",
+            ["Product duration", "Stock status", "How to buy?"],
+        )
+    if contains_any(lower, ("spin", "lucky", "bonus", "reward")):
+        next_spin = dict(user).get("next_spin_at")
+        next_text = f" Your next spin time is {next_spin}." if next_spin else " If the spin button is active, you can spin now."
+        return (
+            f"Daily Spinner can be used once every 24 hours. The maximum wallet reward is $0.05.{next_text}",
+            ["Spin locked", "Maximum spin reward", "Next spin time"],
+        )
+    if contains_any(lower, ("referral", "refer", "invite", "bonus")):
+        return (
+            "Referral program: copy your referral link from Account. When a new user joins through your link, you earn $0.05 wallet bonus. The referral card shows total referrals, total earned, pending earned, and referral history.",
+            ["Copy referral link", "Referral bonus", "Referral history"],
+        )
+    if contains_any(lower, ("support", "ticket", "help", "contact")):
+        return (
+            f"Support is available from Account > Support. Telegram support contact: {support_contact}. You can also create tickets and read admin replies inside the app.",
+            ["Open support inbox", "Create ticket", "Ticket reply"],
+        )
+    if contains_any(lower, ("reseller", "seller")):
+        return (
+            f"Use Account > Apply for Reseller to contact the reseller manager. Current reseller contact: {reseller_contact}.",
+            ["Apply for reseller", "Reseller contact", "Special pricing"],
+        )
+    if contains_any(lower, ("currency", "language", "english", "bangla", "usd", "bdt")):
+        return (
+            "Currency and language can be changed from Account. When currency changes, the app updates price symbols and currency icons automatically.",
+            ["Change currency", "AI language", "USD to BDT"],
+        )
+    if contains_any(lower, ("admin", "manage", "logo", "broadcast", "user")):
+        admin_text = "Your account is an admin account, so you can open Admin Panel from Account." if user["is_admin"] else "Admin Panel is visible only to configured admin Telegram IDs."
+        return (
+            f"{admin_text} Admin can manage products, sections, payment methods, logo, product keys, orders, users, coupons, support, reseller contact, AI settings, tickets, and broadcasts.",
+            ["Change app logo", "Add payment method", "Upload product keys"],
+        )
+    return (
+        "I am ACI AI. I can answer customer questions about this mini app: payments, checkout, wallet, orders, product delivery, daily spin, referral bonus, support, reseller requests, profile, currency, language, and admin rules. Please ask your question with a little more detail and I will answer in English.",
+        suggestions,
+    )
+
+
 def mini_app_assistant_answer(
     message: str,
     *,
@@ -494,6 +621,20 @@ def mini_app_assistant_answer(
     reseller: dict[str, Any],
     ai_settings: dict[str, Any],
 ) -> tuple[str, list[str]]:
+    return english_assistant_answer(
+        message,
+        user=user,
+        currency=currency,
+        stats=stats,
+        payments=payments,
+        orders=orders,
+        methods=methods,
+        categories=categories,
+        products=products,
+        support=support,
+        reseller=reseller,
+        ai_settings=ai_settings,
+    )
     custom = ai_settings.get("custom_knowledge") or ""
     method_names = ", ".join(method["name"] for method in methods) or "No active payment method set"
     category_names = ", ".join(category["name"] for category in categories[:8]) or "No active section yet"
@@ -561,7 +702,7 @@ def mini_app_assistant_answer(
         next_spin = dict(user).get("next_spin_at")
         next_text = f" Next spin time: {next_spin}." if next_spin else " Spin available থাকলে Daily Spin খুলে spin করতে পারবেন."
         return (
-            f"Daily Spin Account section থেকে খুলবেন. প্রত্যেক user 24 ঘণ্টায় একবার spin করতে পারে, সর্বোচ্চ bonus 0.50 wallet credit.{next_text}",
+            f"Daily Spin Account section থেকে খুলবেন. প্রত্যেক user 24 ঘণ্টায় একবার spin করতে পারে, সর্বোচ্চ bonus 0.05 wallet credit.{next_text}",
             ["Spin কাজ করছে না", "Bonus কত?", "Next spin কখন?"],
         )
     if contains_any(message, ("referral", "refer", "রেফার", "রেফারেল")):
@@ -643,13 +784,13 @@ async def ensure_spin_runtime_schema(conn: asyncpg.Connection) -> None:
         "insert into spin_prizes (title, amount, weight, sort_order) select 'Small Bonus', 0.05, 25, 20 where not exists (select 1 from spin_prizes where title = 'Small Bonus')"
     )
     await conn.execute(
-        "insert into spin_prizes (title, amount, weight, sort_order) select 'Wallet Bonus', 0.10, 15, 30 where not exists (select 1 from spin_prizes where title = 'Wallet Bonus')"
+        "insert into spin_prizes (title, amount, weight, sort_order) select 'Wallet Bonus', 0.02, 15, 30 where not exists (select 1 from spin_prizes where title = 'Wallet Bonus')"
     )
     await conn.execute(
-        "insert into spin_prizes (title, amount, weight, sort_order) select 'Lucky Reward', 0.25, 8, 40 where not exists (select 1 from spin_prizes where title = 'Lucky Reward')"
+        "insert into spin_prizes (title, amount, weight, sort_order) select 'Lucky Reward', 0.03, 8, 40 where not exists (select 1 from spin_prizes where title = 'Lucky Reward')"
     )
     await conn.execute(
-        "insert into spin_prizes (title, amount, weight, sort_order) select 'Mega Reward', 0.50, 2, 50 where not exists (select 1 from spin_prizes where title = 'Mega Reward')"
+        "insert into spin_prizes (title, amount, weight, sort_order) select 'Mega Reward', 0.05, 2, 50 where not exists (select 1 from spin_prizes where title = 'Mega Reward')"
     )
     await conn.execute(
         """
@@ -675,9 +816,9 @@ async def ensure_spin_runtime_schema(conn: asyncpg.Connection) -> None:
     )
     await conn.execute("update spin_prizes set amount = 0, weight = 50, sort_order = 10 where title = 'Try Again'")
     await conn.execute("update spin_prizes set amount = 0.05, weight = 25, sort_order = 20 where title = 'Small Bonus'")
-    await conn.execute("update spin_prizes set amount = 0.10, weight = 15, sort_order = 30 where title = 'Wallet Bonus'")
-    await conn.execute("update spin_prizes set amount = 0.25, weight = 8, sort_order = 40 where title = 'Lucky Reward'")
-    await conn.execute("update spin_prizes set amount = 0.50, weight = 2, sort_order = 50 where title = 'Mega Reward'")
+    await conn.execute("update spin_prizes set amount = 0.02, weight = 15, sort_order = 30 where title = 'Wallet Bonus'")
+    await conn.execute("update spin_prizes set amount = 0.03, weight = 8, sort_order = 40 where title = 'Lucky Reward'")
+    await conn.execute("update spin_prizes set amount = 0.05, weight = 2, sort_order = 50 where title = 'Mega Reward'")
     await conn.execute("update spin_prizes set amount = least(amount, $1)", MAX_SPIN_BONUS)
 
 
@@ -1201,6 +1342,7 @@ async def dashboard(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
         support_settings = await fetch_support_settings(conn)
         reseller_settings = await fetch_reseller_settings(conn)
         ai_settings = await fetch_ai_assistant_settings(conn)
+        branding = await fetch_branding_settings(conn)
     return {
         "user": jsonable(user),
         "stats": jsonable(stats),
@@ -1212,6 +1354,7 @@ async def dashboard(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
         "support": jsonable(support_settings),
         "reseller": jsonable(reseller_settings),
         "assistant": jsonable({"intro": ai_settings["intro"], "enabled": ai_settings["enabled"]}),
+        "branding": jsonable(branding),
     }
 
 
@@ -1388,8 +1531,8 @@ async def assistant_chat(
             pass
     if not ai_settings["enabled"]:
         return {
-            "reply": "AI Assistant এখন admin panel থেকে inactive করা আছে.",
-            "suggestions": ["Support কোথায়?", "Payment pending কেন?"],
+            "reply": "ACI AI is currently inactive from the admin panel. Please use Support from the Account page.",
+            "suggestions": ["Contact support", "Payment pending", "Order status"],
         }
     try:
         reply, suggestions = mini_app_assistant_answer(
@@ -1408,11 +1551,11 @@ async def assistant_chat(
         )
     except Exception:
         reply = (
-            "AI Assistant এখন basic mode-এ উত্তর দিচ্ছে. Add Fund করতে Account > Add Fund খুলে payment method select করুন, "
-            "address copy করুন, amount এবং screenshot upload করে Submit Payment চাপুন. Orders tab-এ order history, "
-            "History tab-এ transaction history দেখা যাবে."
+            "ACI AI is answering in basic mode. To add funds, open Account > Add Funds, select an active payment method, "
+            "copy the payment address, then submit the amount, transaction ID, and screenshot. Orders tab shows order history. "
+            "History tab shows wallet transactions."
         )
-        suggestions = ["Add Fund", "Order status", "Support কোথায়?", "Daily spin"]
+        suggestions = ["Add funds", "Order status", "Contact support", "Daily spin"]
     return {"reply": reply, "suggestions": suggestions}
 
 
@@ -1642,11 +1785,27 @@ async def referrals(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
             """,
             user["id"],
         )
+        summary = await conn.fetchrow(
+            """
+            select count(*) as total_referrals,
+                   coalesce(sum(bonus_amount) filter (where status = 'rewarded'), 0) as total_earned,
+                   coalesce(sum(bonus_amount) filter (where status <> 'rewarded'), 0) as pending_earned
+              from referrals
+             where referrer_user_id = $1
+            """,
+            user["id"],
+        )
     if settings.bot_username and settings.mini_app_short_name:
         link = f"https://t.me/{settings.bot_username}/{settings.mini_app_short_name}?startapp={user['referral_code']}"
     else:
         link = user["referral_code"]
-    return {"referral_code": user["referral_code"], "referral_link": link, "referrals": jsonable(rows)}
+    return {
+        "referral_code": user["referral_code"],
+        "referral_link": link,
+        "referrals": jsonable(rows),
+        "summary": jsonable(summary),
+        "bonus_per_referral": jsonable(settings.referral_bonus),
+    }
 
 
 @app.get("/api/spin")
@@ -1860,7 +2019,9 @@ async def admin_dashboard(admin: Annotated[asyncpg.Record, Depends(admin_user)])
                 (select coalesce(sum(total), 0) from orders where status in ('approved', 'delivered')) as total_sales,
                 (select count(*) from payment_requests where status = 'pending') as pending_payments,
                 (select count(*) from orders where status in ('approved', 'delivered') and created_at + (duration_days || ' days')::interval >= now()) as active_subscriptions,
-                (select coalesce(sum(total), 0) from orders where status in ('approved', 'delivered') and created_at::date = current_date) as todays_sales
+                (select coalesce(sum(total), 0) from orders where status in ('approved', 'delivered') and created_at::date = current_date) as todays_sales,
+                (select count(*) from referrals) as total_referrals,
+                (select coalesce(sum(bonus_amount), 0) from referrals where status = 'rewarded') as total_referral_bonus
             """
         )
         recent_orders = await conn.fetch(
@@ -2628,8 +2789,14 @@ async def admin_users(
             """
             select u.*,
                    (select count(*) from orders o where o.user_id = u.id) as order_count,
-                   (select count(*) from payment_requests p where p.user_id = u.id) as payment_count
+                   (select count(*) from payment_requests p where p.user_id = u.id) as payment_count,
+                   (select count(*) from referrals r where r.referrer_user_id = u.id) as referral_count,
+                   (select coalesce(sum(r.bonus_amount), 0) from referrals r where r.referrer_user_id = u.id and r.status = 'rewarded') as referral_earned,
+                   (select coalesce(sum(r.bonus_amount), 0) from referrals r where r.referrer_user_id = u.id and r.status <> 'rewarded') as referral_pending,
+                   referred_by.telegram_id as referred_by_telegram_id,
+                   referred_by.username as referred_by_username
               from users u
+              left join users referred_by on referred_by.id = u.referred_by_user_id
              where $1::text is null
                 or u.first_name ilike '%' || $1 || '%'
                 or u.username ilike '%' || $1 || '%'
@@ -2710,7 +2877,13 @@ async def admin_support_settings(admin: Annotated[asyncpg.Record, Depends(admin_
         support = await fetch_support_settings(conn)
         reseller = await fetch_reseller_settings(conn)
         assistant = await fetch_ai_assistant_settings(conn)
-    return {"support": jsonable(support), "reseller": jsonable(reseller), "assistant": jsonable(assistant)}
+        branding = await fetch_branding_settings(conn)
+    return {
+        "support": jsonable(support),
+        "reseller": jsonable(reseller),
+        "assistant": jsonable(assistant),
+        "branding": jsonable(branding),
+    }
 
 
 @app.post("/api/admin/support-settings")
@@ -2731,7 +2904,28 @@ async def admin_update_support_settings(
             support = await fetch_support_settings(conn)
             reseller = await fetch_reseller_settings(conn)
             assistant = await fetch_ai_assistant_settings(conn)
-    return {"support": jsonable(support), "reseller": jsonable(reseller), "assistant": jsonable(assistant)}
+            branding = await fetch_branding_settings(conn)
+    return {"support": jsonable(support), "reseller": jsonable(reseller), "assistant": jsonable(assistant), "branding": jsonable(branding)}
+
+
+@app.post("/api/admin/branding-settings")
+async def admin_update_branding_settings(
+    data: BrandingSettingsIn,
+    admin: Annotated[asyncpg.Record, Depends(admin_user)],
+) -> dict[str, Any]:
+    async with connection() as conn:
+        async with conn.transaction():
+            await save_app_settings(conn, {"app_logo_url": data.logo_url.strip()})
+            support = await fetch_support_settings(conn)
+            reseller = await fetch_reseller_settings(conn)
+            assistant = await fetch_ai_assistant_settings(conn)
+            branding = await fetch_branding_settings(conn)
+    return {
+        "support": jsonable(support),
+        "reseller": jsonable(reseller),
+        "assistant": jsonable(assistant),
+        "branding": jsonable(branding),
+    }
 
 
 @app.post("/api/admin/reseller-settings")
@@ -2752,7 +2946,8 @@ async def admin_update_reseller_settings(
             support = await fetch_support_settings(conn)
             reseller = await fetch_reseller_settings(conn)
             assistant = await fetch_ai_assistant_settings(conn)
-    return {"support": jsonable(support), "reseller": jsonable(reseller), "assistant": jsonable(assistant)}
+            branding = await fetch_branding_settings(conn)
+    return {"support": jsonable(support), "reseller": jsonable(reseller), "assistant": jsonable(assistant), "branding": jsonable(branding)}
 
 
 @app.post("/api/admin/assistant-settings")
@@ -2771,7 +2966,8 @@ async def admin_update_assistant_settings(
             support = await fetch_support_settings(conn)
             reseller = await fetch_reseller_settings(conn)
             assistant = await fetch_ai_assistant_settings(conn)
-    return {"support": jsonable(support), "reseller": jsonable(reseller), "assistant": jsonable(assistant)}
+            branding = await fetch_branding_settings(conn)
+    return {"support": jsonable(support), "reseller": jsonable(reseller), "assistant": jsonable(assistant), "branding": jsonable(branding)}
 
 
 @app.get("/api/admin/tickets")

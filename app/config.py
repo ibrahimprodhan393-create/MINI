@@ -31,7 +31,7 @@ class Settings:
     debug = _bool(os.getenv("DEBUG"), False)
     auto_migrate = _bool(os.getenv("AUTO_MIGRATE"), True)
     dev_telegram_user_id = int(os.getenv("DEV_TELEGRAM_USER_ID", "100000001"))
-    referral_bonus = Decimal(os.getenv("REFERRAL_BONUS", "10"))
+    referral_bonus = Decimal(os.getenv("REFERRAL_BONUS", "0.05"))
     telegram_auth_max_age_seconds = int(os.getenv("TELEGRAM_AUTH_MAX_AGE_SECONDS", "86400"))
     db_pool_min_size = int(os.getenv("DB_POOL_MIN_SIZE", "1"))
     db_pool_max_size = int(os.getenv("DB_POOL_MAX_SIZE", "5"))
