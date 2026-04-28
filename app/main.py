@@ -2672,6 +2672,16 @@ async def index() -> FileResponse:
     return FileResponse(BASE_DIR / "app" / "templates" / "index.html")
 
 
+@app.head("/")
+async def index_head() -> Response:
+    return Response(status_code=200)
+
+
 @app.get("/{path:path}")
 async def spa_fallback(path: str) -> FileResponse:
     return FileResponse(BASE_DIR / "app" / "templates" / "index.html")
+
+
+@app.head("/{path:path}")
+async def spa_fallback_head(path: str) -> Response:
+    return Response(status_code=200)

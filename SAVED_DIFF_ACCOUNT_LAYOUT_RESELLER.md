@@ -79,6 +79,10 @@ This file saves the latest change set in plain text because Git is not available
 - `POST /api/admin/reseller-settings`
 - `POST /api/admin/assistant-settings`
 
+## Uptime Monitor Fix
+
+- Added `HEAD /` and `HEAD /{path}` responses so root URL monitors do not produce `405 Method Not Allowed`.
+
 ## Render Start Command
 
 ```bash

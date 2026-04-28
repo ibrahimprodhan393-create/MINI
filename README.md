@@ -13,6 +13,7 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 - Product key store: admins upload/delete 1 Day, 7 Days, and 30 Days keys, file links, or panel login lines per product
 - Wallet: add balance request, payment method, transaction ID, screenshot upload
 - Account screen: add fund, payment details, payment request status, daily spin, language, referral, support, profile, currency, reseller apply
+- Add Fund shows admin payment methods as selectable cards, opens payment address/details with copy button, then submits amount and screenshot
 - Account screen uses compact action rows for Add Fund, AI Assistant, Daily Spin, Language, Referral, Promo Code, Support, Profile/Currency, and Reseller
 - AI Assistant chat answers Mini App questions about wallet, payment, orders, products, spin, referral, support, reseller, currency, language, and admin usage
 - History screen contains only wallet/transaction history, and Orders screen contains only order history
@@ -132,6 +133,7 @@ https://your-render-service.onrender.com/health
 ```
 
 Use `GET` if UptimeRobot asks for a method. The app also accepts `HEAD` on `/health` for monitors that use HEAD checks.
+The app also accepts `HEAD` on `/`, so root URL monitors will not show `405 Method Not Allowed`.
 
 ## Auto Payment Webhook
 
