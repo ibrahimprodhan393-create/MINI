@@ -9,6 +9,7 @@ create table if not exists users (
     last_seen_at timestamptz,
     wallet_balance numeric(12,2) not null default 0,
     selected_currency text not null default 'USD',
+    selected_language text not null default 'en',
     next_spin_at timestamptz,
     is_admin boolean not null default false,
     is_banned boolean not null default false,
@@ -17,6 +18,7 @@ create table if not exists users (
 );
 
 alter table users add column if not exists selected_currency text not null default 'USD';
+alter table users add column if not exists selected_language text not null default 'en';
 alter table users add column if not exists next_spin_at timestamptz;
 
 create table if not exists currencies (
@@ -289,7 +291,12 @@ insert into app_settings (key, value) values
     ('support_telegram_username', ''),
     ('support_telegram_user_id', ''),
     ('support_note', 'Tap to open Telegram inbox for help.'),
-    ('support_enabled', 'true')
+    ('support_enabled', 'true'),
+    ('reseller_display_name', 'Reseller Manager'),
+    ('reseller_telegram_username', ''),
+    ('reseller_telegram_user_id', ''),
+    ('reseller_note', 'Apply for reseller pricing through Telegram.'),
+    ('reseller_enabled', 'true')
 on conflict (key) do nothing;
 
 insert into payment_methods (name, instructions, method_type, account_label, account_value, sort_order)
@@ -323,6 +330,17 @@ insert into spin_prizes (title, amount, weight, sort_order)
 select 'Lucky Reward', 0.25, 8, 40 where not exists (select 1 from spin_prizes where title = 'Lucky Reward');
 insert into spin_prizes (title, amount, weight, sort_order)
 select 'Mega Reward', 0.50, 2, 50 where not exists (select 1 from spin_prizes where title = 'Mega Reward');
+
+with duplicates as (
+    select duplicate.id as duplicate_id, keeper.id as keeper_id
+      from spin_prizes duplicate
+      join spin_prizes keeper on keeper.title = duplicate.title
+     where duplicate.id > keeper.id
+)
+update spin_history
+   set prize_id = duplicates.keeper_id
+  from duplicates
+ where spin_history.prize_id = duplicates.duplicate_id;
 
 delete from spin_prizes duplicate
 using spin_prizes keeper

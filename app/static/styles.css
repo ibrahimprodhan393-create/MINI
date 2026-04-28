@@ -218,7 +218,7 @@ main {
 .bottom-nav {
   position: static;
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 7px;
   margin: 0 0 18px;
   padding: 0;
@@ -696,18 +696,47 @@ main {
   text-align: center;
 }
 
-.spin-wheel {
-  width: 230px;
-  height: 230px;
+.spin-stage {
+  position: relative;
+  width: 258px;
+  height: 258px;
   margin: 4px auto 18px;
+  display: grid;
+  place-items: center;
+}
+
+.spin-pointer {
+  position: absolute;
+  top: -2px;
+  left: 50%;
+  z-index: 2;
+  width: 0;
+  height: 0;
+  transform: translateX(-50%);
+  border-left: 15px solid transparent;
+  border-right: 15px solid transparent;
+  border-top: 28px solid var(--warning);
+  filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.45));
+}
+
+.spin-wheel {
+  width: 238px;
+  height: 238px;
+  margin: 0;
   border-radius: 999px;
   display: grid;
   place-items: center;
   position: relative;
   overflow: hidden;
   background:
-    conic-gradient(from 0deg, #ff3148, #151721 35deg, #ffb84b 75deg, #151721 115deg, #35d37e 160deg, #151721 205deg, #ff3148 250deg, #151721 310deg, #ff3148);
-  box-shadow: 0 20px 50px rgba(255, 49, 72, 0.22);
+    conic-gradient(from -18deg, #ff3148 0 45deg, #151721 45deg 90deg, #ffb84b 90deg 135deg, #202331 135deg 180deg, #35d37e 180deg 225deg, #111827 225deg 270deg, #ff5264 270deg 315deg, #262a38 315deg 360deg);
+  border: 8px solid rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 3px rgba(0, 0, 0, 0.28), 0 20px 50px rgba(255, 49, 72, 0.22);
+  transition: transform 1.8s cubic-bezier(0.12, 0.86, 0.24, 1);
+}
+
+.spin-wheel.spinning {
+  transform: rotate(1440deg);
 }
 
 .spin-wheel::after {
@@ -721,10 +750,43 @@ main {
   color: white;
   font-weight: 900;
   border: 6px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
 }
 
-.spin-wheel span {
-  display: none;
+.spin-label {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 80px;
+  min-height: 34px;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  transform-origin: 0 0;
+  color: white;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 900;
+  text-shadow: 0 2px 7px rgba(0, 0, 0, 0.5);
+}
+
+.spin-label small {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.label-0 { transform: rotate(0deg) translate(48px, -17px) rotate(0deg); }
+.label-1 { transform: rotate(45deg) translate(48px, -17px) rotate(-45deg); }
+.label-2 { transform: rotate(90deg) translate(48px, -17px) rotate(-90deg); }
+.label-3 { transform: rotate(135deg) translate(48px, -17px) rotate(-135deg); }
+.label-4 { transform: rotate(180deg) translate(48px, -17px) rotate(-180deg); }
+.label-5 { transform: rotate(225deg) translate(48px, -17px) rotate(-225deg); }
+.label-6 { transform: rotate(270deg) translate(48px, -17px) rotate(-270deg); }
+.label-7 { transform: rotate(315deg) translate(48px, -17px) rotate(-315deg); }
+
+.spin-result {
+  margin: 10px 0;
 }
 
 .segmented {

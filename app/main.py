@@ -80,6 +80,21 @@ class CurrencySelectIn(BaseModel):
     code: str = Field(min_length=2, max_length=12)
 
 
+LANGUAGE_CODES = {"en", "bn", "hi", "ur", "ar", "id", "ms", "ne", "fil", "ru", "th", "tr"}
+
+
+class LanguageSelectIn(BaseModel):
+    code: str = Field(min_length=2, max_length=16)
+
+    @field_validator("code")
+    @classmethod
+    def valid_language_code(cls, value: str) -> str:
+        clean = value.strip().lower()
+        if clean not in LANGUAGE_CODES:
+            raise ValueError("Language is not supported.")
+        return clean
+
+
 class SupportSettingsIn(BaseModel):
     display_name: str = Field(default="Store Support", min_length=1, max_length=120)
     telegram_username: str = Field(default="", max_length=120)
@@ -235,6 +250,14 @@ SUPPORT_SETTING_DEFAULTS = {
     "support_enabled": "true",
 }
 
+RESELLER_SETTING_DEFAULTS = {
+    "reseller_display_name": "Reseller Manager",
+    "reseller_telegram_username": "",
+    "reseller_telegram_user_id": "",
+    "reseller_note": "Apply for reseller pricing through Telegram.",
+    "reseller_enabled": "true",
+}
+
 
 def normalize_telegram_username(value: str) -> str:
     clean = value.strip()
@@ -251,22 +274,54 @@ def normalize_telegram_username(value: str) -> str:
     return clean
 
 
-async def fetch_support_settings(conn: asyncpg.Connection) -> dict[str, Any]:
+async def fetch_contact_settings(
+    conn: asyncpg.Connection,
+    defaults: dict[str, str],
+    prefix: str,
+    fallback_name: str,
+) -> dict[str, Any]:
     rows = await conn.fetch(
         "select key, value from app_settings where key = any($1::text[])",
-        list(SUPPORT_SETTING_DEFAULTS.keys()),
+        list(defaults.keys()),
     )
-    values = SUPPORT_SETTING_DEFAULTS | {row["key"]: row["value"] for row in rows}
-    username = normalize_telegram_username(values["support_telegram_username"])
-    user_id = values["support_telegram_user_id"].strip()
+    values = defaults | {row["key"]: row["value"] for row in rows}
+    username = normalize_telegram_username(values[f"{prefix}_telegram_username"])
+    user_id = values[f"{prefix}_telegram_user_id"].strip()
     return {
-        "display_name": values["support_display_name"].strip() or "Store Support",
+        "display_name": values[f"{prefix}_display_name"].strip() or fallback_name,
         "telegram_username": username,
         "telegram_user_id": user_id,
-        "note": values["support_note"].strip(),
-        "enabled": values["support_enabled"].lower() == "true",
+        "note": values[f"{prefix}_note"].strip(),
+        "enabled": values[f"{prefix}_enabled"].lower() == "true",
         "has_contact": bool(username or user_id),
     }
+
+
+async def fetch_support_settings(conn: asyncpg.Connection) -> dict[str, Any]:
+    return await fetch_contact_settings(conn, SUPPORT_SETTING_DEFAULTS, "support", "Store Support")
+
+
+async def fetch_reseller_settings(conn: asyncpg.Connection) -> dict[str, Any]:
+    return await fetch_contact_settings(conn, RESELLER_SETTING_DEFAULTS, "reseller", "Reseller Manager")
+
+
+async def save_app_settings(conn: asyncpg.Connection, payload: dict[str, str]) -> None:
+    for key, value in payload.items():
+        await conn.execute(
+            """
+            insert into app_settings (key, value, updated_at)
+            values ($1, $2, now())
+            on conflict (key) do update set
+                value = excluded.value,
+                updated_at = now()
+            """,
+            key,
+            value,
+        )
+
+
+async def ensure_user_preferences_runtime_schema(conn: asyncpg.Connection) -> None:
+    await conn.execute("alter table users add column if not exists selected_language text not null default 'en'")
 
 
 async def run_schema() -> None:
@@ -321,6 +376,20 @@ async def ensure_spin_runtime_schema(conn: asyncpg.Connection) -> None:
     )
     await conn.execute(
         "insert into spin_prizes (title, amount, weight, sort_order) select 'Mega Reward', 0.50, 2, 50 where not exists (select 1 from spin_prizes where title = 'Mega Reward')"
+    )
+    await conn.execute(
+        """
+        with duplicates as (
+            select duplicate.id as duplicate_id, keeper.id as keeper_id
+              from spin_prizes duplicate
+              join spin_prizes keeper on keeper.title = duplicate.title
+             where duplicate.id > keeper.id
+        )
+        update spin_history
+           set prize_id = duplicates.keeper_id
+          from duplicates
+         where spin_history.prize_id = duplicates.duplicate_id
+        """
     )
     await conn.execute(
         """
@@ -856,6 +925,7 @@ async def dashboard(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
             "select * from currencies where active = true order by sort_order, code"
         )
         support_settings = await fetch_support_settings(conn)
+        reseller_settings = await fetch_reseller_settings(conn)
     return {
         "user": jsonable(user),
         "stats": jsonable(stats),
@@ -865,6 +935,7 @@ async def dashboard(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
         "currency": jsonable(currency),
         "currencies": jsonable(currencies),
         "support": jsonable(support_settings),
+        "reseller": jsonable(reseller_settings),
     }
 
 
@@ -910,6 +981,13 @@ async def support_settings(user: Annotated[asyncpg.Record, Depends(current_user)
     return {"support": jsonable(support)}
 
 
+@app.get("/api/reseller-settings")
+async def reseller_settings(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dict[str, Any]:
+    async with connection() as conn:
+        reseller = await fetch_reseller_settings(conn)
+    return {"reseller": jsonable(reseller)}
+
+
 @app.get("/api/currencies")
 async def currencies(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dict[str, Any]:
     async with connection() as conn:
@@ -940,6 +1018,21 @@ async def set_currency(
             code,
         )
     return {"user": jsonable(updated), "currency": jsonable(currency)}
+
+
+@app.post("/api/profile/language")
+async def set_language(
+    data: LanguageSelectIn,
+    user: Annotated[asyncpg.Record, Depends(current_user)],
+) -> dict[str, Any]:
+    async with connection() as conn:
+        await ensure_user_preferences_runtime_schema(conn)
+        updated = await conn.fetchrow(
+            "update users set selected_language = $2 where id = $1 returning *",
+            user["id"],
+            data.code,
+        )
+    return {"user": jsonable(updated), "language": data.code}
 
 
 @app.get("/api/products")
@@ -1186,30 +1279,27 @@ async def spin_play(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
                 weighted.extend([prize] * max(1, int(prize["weight"])))
             prize = random.choice(weighted)
             amount = min(Decimal(prize["amount"]), MAX_SPIN_BONUS).quantize(Decimal("0.01"))
-            cooldown_days = random.choice([3, 4])
             if amount > 0:
                 updated_user = await conn.fetchrow(
                     """
                     update users
                        set wallet_balance = wallet_balance + $1,
-                           next_spin_at = now() + ($3::text || ' days')::interval
+                           next_spin_at = now() + interval '24 hours'
                      where id = $2
                  returning wallet_balance, next_spin_at
                     """,
                     amount,
                     user["id"],
-                    cooldown_days,
                 )
             else:
                 updated_user = await conn.fetchrow(
                     """
                     update users
-                       set next_spin_at = now() + ($2::text || ' days')::interval
+                       set next_spin_at = now() + interval '24 hours'
                      where id = $1
                  returning wallet_balance, next_spin_at
                     """,
                     user["id"],
-                    cooldown_days,
                 )
             history = await conn.fetchrow(
                 """
@@ -1243,7 +1333,7 @@ async def spin_play(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
         "history": jsonable(history),
         "balance": jsonable(updated_user["wallet_balance"]),
         "next_spin_at": jsonable(updated_user["next_spin_at"]),
-        "cooldown_days": cooldown_days,
+        "cooldown_hours": 24,
     }
 
 
@@ -2182,7 +2272,8 @@ async def admin_unban_user(user_id: int, admin: Annotated[asyncpg.Record, Depend
 async def admin_support_settings(admin: Annotated[asyncpg.Record, Depends(admin_user)]) -> dict[str, Any]:
     async with connection() as conn:
         support = await fetch_support_settings(conn)
-    return {"support": jsonable(support)}
+        reseller = await fetch_reseller_settings(conn)
+    return {"support": jsonable(support), "reseller": jsonable(reseller)}
 
 
 @app.post("/api/admin/support-settings")
@@ -2199,20 +2290,30 @@ async def admin_update_support_settings(
     }
     async with connection() as conn:
         async with conn.transaction():
-            for key, value in payload.items():
-                await conn.execute(
-                    """
-                    insert into app_settings (key, value, updated_at)
-                    values ($1, $2, now())
-                    on conflict (key) do update set
-                        value = excluded.value,
-                        updated_at = now()
-                    """,
-                    key,
-                    value,
-                )
+            await save_app_settings(conn, payload)
             support = await fetch_support_settings(conn)
-    return {"support": jsonable(support)}
+            reseller = await fetch_reseller_settings(conn)
+    return {"support": jsonable(support), "reseller": jsonable(reseller)}
+
+
+@app.post("/api/admin/reseller-settings")
+async def admin_update_reseller_settings(
+    data: SupportSettingsIn,
+    admin: Annotated[asyncpg.Record, Depends(admin_user)],
+) -> dict[str, Any]:
+    payload = {
+        "reseller_display_name": data.display_name.strip(),
+        "reseller_telegram_username": normalize_telegram_username(data.telegram_username),
+        "reseller_telegram_user_id": data.telegram_user_id.strip(),
+        "reseller_note": data.note.strip(),
+        "reseller_enabled": "true" if data.enabled else "false",
+    }
+    async with connection() as conn:
+        async with conn.transaction():
+            await save_app_settings(conn, payload)
+            support = await fetch_support_settings(conn)
+            reseller = await fetch_reseller_settings(conn)
+    return {"support": jsonable(support), "reseller": jsonable(reseller)}
 
 
 @app.get("/api/admin/tickets")

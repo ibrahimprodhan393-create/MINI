@@ -22,7 +22,7 @@ The schema creates all tables and starter data for:
 - orders and invoice IDs
 - referrals and bonuses
 - coupons
-- lucky spin prizes, history, and 3-4 day cooldown
+- lucky spin prizes, history, and 24-hour per-user cooldown
 - selectable display currencies
 - admin-configurable Telegram support inbox
 - support tickets and replies

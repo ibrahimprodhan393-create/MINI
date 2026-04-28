@@ -23,9 +23,12 @@ const state = {
   orders: [],
   referrals: null,
   spin: null,
+  spinAnimating: false,
+  spinResult: null,
   tickets: [],
   ticketMessages: [],
   supportSettings: null,
+  resellerSettings: null,
   adminTab: "dashboard",
   admin: {},
   editingProduct: null,
@@ -39,6 +42,21 @@ const state = {
 let mainButtonBound = false;
 let mainButtonHandler = null;
 let backButtonHandler = null;
+
+const languageOptions = [
+  ["en", "English"],
+  ["bn", "Bangla"],
+  ["hi", "Hindi"],
+  ["ur", "Urdu"],
+  ["ar", "Arabic"],
+  ["id", "Indonesian"],
+  ["ms", "Malay"],
+  ["ne", "Nepali"],
+  ["fil", "Filipino"],
+  ["ru", "Russian"],
+  ["th", "Thai"],
+  ["tr", "Turkish"],
+];
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -119,12 +137,16 @@ function videoEmbed(url) {
   return `<video class="video-panel" src="${safe}" controls playsinline></video>`;
 }
 
-function supportTelegramUrl(support) {
-  const username = String(support?.telegram_username || "").trim().replace(/^@/, "");
+function telegramContactUrl(contact) {
+  const username = String(contact?.telegram_username || "").trim().replace(/^@/, "");
   if (username) return `https://t.me/${encodeURIComponent(username)}`;
-  const userId = String(support?.telegram_user_id || "").trim();
+  const userId = String(contact?.telegram_user_id || "").trim();
   if (userId) return `tg://user?id=${encodeURIComponent(userId)}`;
   return "";
+}
+
+function supportTelegramUrl(support) {
+  return telegramContactUrl(support);
 }
 
 async function api(path, options = {}) {
@@ -172,6 +194,10 @@ async function fileToDataUrl(file) {
   });
 }
 
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function userName(user) {
   const full = `${user?.first_name || ""} ${user?.last_name || ""}`.trim();
   return full || user?.username || `User ${user?.telegram_id || ""}`;
@@ -182,6 +208,7 @@ async function loadDashboard() {
   state.currency = state.dashboard.currency || state.currency || { code: "USD", symbol: "$", rate_from_base: 1 };
   state.currencies = state.dashboard.currencies || state.currencies || [];
   state.supportSettings = state.dashboard.support || state.supportSettings;
+  state.resellerSettings = state.dashboard.reseller || state.resellerSettings;
   state.categories = state.dashboard.categories || [];
   state.products = state.dashboard.products || [];
 }
@@ -200,15 +227,23 @@ async function loadRouteData(route = state.route) {
     const methods = await api("/api/payment-methods");
     state.methods = methods.methods || [];
   }
-  if (route === "wallet" || route === "add-balance") {
-    const [methods, payments, transactions] = await Promise.all([
+  if (route === "wallet") {
+    const transactions = await api("/api/wallet/transactions");
+    state.transactions = transactions.transactions || [];
+  }
+  if (route === "profile" || route === "add-balance") {
+    const [methods, payments, transactions, support, reseller] = await Promise.all([
       api("/api/payment-methods"),
       api("/api/payments"),
       api("/api/wallet/transactions"),
+      api("/api/support-settings"),
+      api("/api/reseller-settings"),
     ]);
     state.methods = methods.methods || [];
     state.payments = payments.payments || [];
     state.transactions = transactions.transactions || [];
+    state.supportSettings = support.support || state.supportSettings;
+    state.resellerSettings = reseller.reseller || state.resellerSettings;
   }
   if (route === "orders") {
     const data = await api("/api/orders");
@@ -318,7 +353,6 @@ function bottomNav() {
     ["orders", "Orders", "receipt-text"],
     ["wallet", "History", "history"],
     ["profile", "Account", "wallet-cards"],
-    ["support", "Support", "bot"],
   ];
   return `
     <nav class="bottom-nav">
@@ -341,7 +375,7 @@ function walletCard(user) {
       </div>
       <div class="row">
         <small>Telegram ID ${escapeHtml(user?.telegram_id || "")}</small>
-        <button class="action-btn secondary" style="width:auto; min-height:38px; padding:0 12px;" data-action="set-route" data-route="add-balance">
+        <button class="action-btn secondary" style="width:auto; min-height:38px; padding:0 12px;" data-action="set-route" data-route="profile">
           ${icon("plus")} Add
         </button>
       </div>
@@ -516,22 +550,8 @@ function renderCheckout() {
 }
 
 function renderWallet() {
-  const user = state.dashboard?.user || state.session?.user || {};
   return `
-    ${walletCard(user)}
-    <div class="section-head"><h3>Add Balance</h3></div>
-    ${renderPaymentForm()}
-    <div class="section-head"><h3>Payment Requests</h3></div>
-    <section class="table-lite">
-      ${state.payments.length ? state.payments.map((payment) => `
-        <article class="order-card">
-          <div class="status-row"><h4>${money(payment.amount)}</h4>${statusBadge(payment.status)}</div>
-          <div class="muted">${escapeHtml(payment.method_name)} - ${escapeHtml(payment.transaction_id)}</div>
-          <div class="muted">${shortDate(payment.created_at)}</div>
-        </article>
-      `).join("") : `<div class="empty">No payment requests</div>`}
-    </section>
-    <div class="section-head"><h3>Wallet History</h3></div>
+    <div class="section-head"><h3>Transaction History</h3></div>
     <section class="table-lite">
       ${state.transactions.length ? state.transactions.map((tx) => `
         <article class="order-card">
@@ -539,7 +559,7 @@ function renderWallet() {
           <div class="muted">${escapeHtml(tx.note)} - Balance ${money(tx.balance_after)}</div>
           <div class="muted">${shortDate(tx.created_at)}</div>
         </article>
-      `).join("") : `<div class="empty">No wallet history</div>`}
+      `).join("") : `<div class="empty">No transaction history</div>`}
     </section>
   `;
 }
@@ -623,15 +643,36 @@ function renderSpin() {
   const data = state.spin || {};
   const prizes = data.prizes || [];
   const canSpin = Number(data.spins_left || 0) > 0;
+  const segments = prizes.length ? prizes.slice(0, 8) : [
+    { title: "Try Again", amount: 0 },
+    { title: "0.05", amount: 0.05 },
+    { title: "0.10", amount: 0.1 },
+    { title: "0.25", amount: 0.25 },
+    { title: "0.50", amount: 0.5 },
+  ];
   return `
     <div class="section-head"><h3>Lucky Spin</h3><button data-action="set-route" data-route="profile">Back</button></div>
     <section class="panel spin-panel">
-      <div class="spin-wheel">
-        ${prizes.slice(0, 8).map((prize) => `<span>${escapeHtml(prize.title)}</span>`).join("")}
+      <div class="spin-stage">
+        <div class="spin-pointer"></div>
+        <div class="spin-wheel ${state.spinAnimating ? "spinning" : ""}">
+          ${segments.map((prize, index) => `
+            <span class="spin-label label-${index}">
+              <strong>${escapeHtml(prize.title)}</strong>
+              <small>${Number(prize.amount || 0) > 0 ? money(prize.amount) : "No bonus"}</small>
+            </span>
+          `).join("")}
+        </div>
       </div>
       <p class="muted">Max bonus: ${money(data.max_bonus ?? 0.5)}</p>
       <p class="muted">${canSpin ? "Spin available now" : `Next spin: ${shortDate(data.next_spin_at)}`}</p>
-      <button class="action-btn" data-action="play-spin" type="button" ${canSpin ? "" : "disabled"}>${icon("rotate-cw")} Spin Now</button>
+      ${state.spinResult ? `
+        <div class="notice spin-result">
+          <strong>${escapeHtml(state.spinResult.title)}</strong>
+          <p>${Number(state.spinResult.amount || 0) > 0 ? `Bonus added: ${money(state.spinResult.amount)}` : "Better luck next time"}</p>
+        </div>
+      ` : ""}
+      <button class="action-btn" data-action="play-spin" type="button" ${canSpin && !state.spinAnimating ? "" : "disabled"}>${icon("rotate-cw")} ${state.spinAnimating ? "Spinning..." : "Spin Now"}</button>
     </section>
     <div class="section-head"><h3>Spin History</h3></div>
     <section class="table-lite">
@@ -730,7 +771,58 @@ function renderSupport() {
 function renderProfile() {
   const user = state.dashboard?.user || state.session?.user || {};
   const name = userName(user);
+  const support = state.supportSettings || {};
+  const reseller = state.resellerSettings || {};
+  const supportUrl = telegramContactUrl(support);
+  const resellerUrl = telegramContactUrl(reseller);
+  const selectedLanguage = user.selected_language || "en";
   return `
+    ${walletCard(user)}
+    <div class="section-head"><h3>Add Fund</h3></div>
+    ${renderPaymentForm()}
+    <div class="section-head"><h3>Payment Requests</h3></div>
+    <section class="table-lite">
+      ${state.payments.length ? state.payments.map((payment) => `
+        <article class="order-card">
+          <div class="status-row"><h4>${money(payment.amount)}</h4>${statusBadge(payment.status)}</div>
+          <div class="muted">${escapeHtml(payment.method_name)} - ${escapeHtml(payment.transaction_id)}</div>
+          <div class="muted">${shortDate(payment.created_at)}</div>
+        </article>
+      `).join("") : `<div class="empty">No payment requests</div>`}
+    </section>
+    <div class="section-head"><h3>Daily Spinner</h3></div>
+    <section class="panel form-grid">
+      <button class="action-btn" data-action="set-route" data-route="spin" type="button">${icon("rotate-cw")} Daily Spin</button>
+    </section>
+    <div class="section-head"><h3>Language</h3></div>
+    <form class="panel form-grid" id="language-form">
+      <div class="field">
+        <label>Select Language</label>
+        <select name="code">
+          ${languageOptions.map(([code, label]) => `
+            <option value="${escapeHtml(code)}" ${code === selectedLanguage ? "selected" : ""}>${escapeHtml(label)}</option>
+          `).join("")}
+        </select>
+      </div>
+      <button class="action-btn secondary" type="submit">${icon("languages")} Save Language</button>
+    </form>
+    <div class="section-head"><h3>Referral</h3></div>
+    <section class="panel form-grid">
+      <button class="action-btn secondary" data-action="set-route" data-route="referral" type="button">${icon("share-2")} Referral</button>
+      <button class="action-btn secondary" data-action="set-route" data-route="coupon" type="button">${icon("badge-percent")} Promo Code</button>
+    </section>
+    <div class="section-head"><h3>Support</h3></div>
+    <section class="panel support-card">
+      <div class="support-icon">${icon("headphones")}</div>
+      <div>
+        <h3>${escapeHtml(support.display_name || "Store Support")}</h3>
+        <p>${escapeHtml(support.note || "Tap to open Telegram inbox for help.")}</p>
+        <small>${support.telegram_username ? `@${escapeHtml(support.telegram_username)}` : support.telegram_user_id ? `ID ${escapeHtml(support.telegram_user_id)}` : "Support contact not set"}</small>
+      </div>
+      <button class="action-btn" data-action="open-support-chat" data-url="${escapeHtml(support.enabled ? supportUrl : "")}" type="button">${icon("send")} Open Inbox</button>
+      <button class="action-btn secondary" data-action="set-route" data-route="support" type="button">${icon("message-circle")} Tickets</button>
+    </section>
+    <div class="section-head"><h3>Profile</h3></div>
     <section class="panel">
       <div class="profile-chip">
         <div class="avatar">${user.photo_url ? `<img src="${escapeHtml(user.photo_url)}" alt="${escapeHtml(name)}" />` : initials(name)}</div>
@@ -743,26 +835,34 @@ function renderProfile() {
         <div class="metric"><span>User ID</span><strong>${escapeHtml(user.telegram_id)}</strong></div>
         <div class="metric"><span>Join date</span><strong style="font-size:15px;">${shortDate(user.joined_at)}</strong></div>
       </div>
-      <form class="form-grid" id="currency-form">
-        <div class="field">
-          <label>Preferred Currency</label>
-          <select name="code">
-            ${state.currencies.map((currency) => `
-              <option value="${escapeHtml(currency.code)}" ${currency.code === state.currency?.code ? "selected" : ""}>
-                ${escapeHtml(currency.symbol)} ${escapeHtml(currency.code)} - ${escapeHtml(currency.name)}
-              </option>
-            `).join("")}
-          </select>
-        </div>
-        <button class="action-btn secondary" type="submit">${icon("coins")} Save Currency</button>
-      </form>
-      <div class="form-grid">
-        <button class="action-btn secondary" data-action="set-route" data-route="spin">${icon("rotate-cw")} Lucky Spin</button>
-        <button class="action-btn secondary" data-action="set-route" data-route="referral">${icon("share-2")} Referral</button>
-        <button class="action-btn secondary" data-action="set-route" data-route="coupon">${icon("badge-percent")} Coupon</button>
-        ${state.session?.is_admin ? `<button class="action-btn" data-action="set-route" data-route="admin">${icon("shield-check")} Admin Panel</button>` : ""}
-      </div>
     </section>
+    <div class="section-head"><h3>Currency</h3></div>
+    <form class="panel form-grid" id="currency-form">
+      <div class="field">
+        <label>Preferred Currency</label>
+        <select name="code">
+          ${state.currencies.map((currency) => `
+            <option value="${escapeHtml(currency.code)}" ${currency.code === state.currency?.code ? "selected" : ""}>
+              ${escapeHtml(currency.symbol)} ${escapeHtml(currency.code)} - ${escapeHtml(currency.name)}
+            </option>
+          `).join("")}
+        </select>
+      </div>
+      <button class="action-btn secondary" type="submit">${icon("coins")} Save Currency</button>
+    </form>
+    <div class="section-head"><h3>Reseller</h3></div>
+    <section class="panel support-card">
+      <div class="support-icon">${icon("handshake")}</div>
+      <div>
+        <h3>${escapeHtml(reseller.display_name || "Reseller Manager")}</h3>
+        <p>${escapeHtml(reseller.note || "Apply for reseller pricing through Telegram.")}</p>
+        <small>${reseller.telegram_username ? `@${escapeHtml(reseller.telegram_username)}` : reseller.telegram_user_id ? `ID ${escapeHtml(reseller.telegram_user_id)}` : "Reseller contact not set"}</small>
+      </div>
+      <button class="action-btn" data-action="open-reseller-chat" data-url="${escapeHtml(reseller.enabled ? resellerUrl : "")}" type="button">
+        ${icon("send")} Apply for Reseller
+      </button>
+    </section>
+    ${state.session?.is_admin ? `<section class="panel form-grid"><button class="action-btn" data-action="set-route" data-route="admin" type="button">${icon("shield-check")} Admin Panel</button></section>` : ""}
   `;
 }
 
@@ -1128,7 +1228,9 @@ function renderAdminCoupons() {
 
 function renderAdminSupport() {
   const support = state.admin.support?.support || {};
+  const reseller = state.admin.support?.reseller || {};
   return `
+    <div class="section-head"><h3>Support Contact</h3></div>
     <form class="panel form-grid" id="admin-support-settings-form">
       <div class="field">
         <label>Support display name</label>
@@ -1154,6 +1256,33 @@ function renderAdminSupport() {
         </select>
       </div>
       <button class="action-btn" type="submit">${icon("save")} Save Supporter</button>
+    </form>
+    <div class="section-head"><h3>Reseller Contact</h3></div>
+    <form class="panel form-grid" id="admin-reseller-settings-form">
+      <div class="field">
+        <label>Reseller display name</label>
+        <input name="display_name" required value="${escapeHtml(reseller.display_name || "Reseller Manager")}" />
+      </div>
+      <div class="field">
+        <label>Telegram username</label>
+        <input name="telegram_username" placeholder="reseller_username" value="${escapeHtml(reseller.telegram_username || "")}" />
+      </div>
+      <div class="field">
+        <label>Telegram numeric user ID</label>
+        <input name="telegram_user_id" inputmode="numeric" value="${escapeHtml(reseller.telegram_user_id || "")}" />
+      </div>
+      <div class="field">
+        <label>Reseller note</label>
+        <textarea name="note">${escapeHtml(reseller.note || "Apply for reseller pricing through Telegram.")}</textarea>
+      </div>
+      <div class="field">
+        <label>Status</label>
+        <select name="enabled">
+          <option value="true" ${reseller.enabled !== false ? "selected" : ""}>Active</option>
+          <option value="false" ${reseller.enabled === false ? "selected" : ""}>Inactive</option>
+        </select>
+      </div>
+      <button class="action-btn" type="submit">${icon("save")} Save Reseller</button>
     </form>
   `;
 }
@@ -1202,7 +1331,8 @@ function renderView() {
   if (state.route === "category") return renderCategory();
   if (state.route === "product") return renderProductDetail();
   if (state.route === "checkout") return renderCheckout();
-  if (state.route === "wallet" || state.route === "add-balance") return renderWallet();
+  if (state.route === "wallet") return renderWallet();
+  if (state.route === "add-balance") return renderProfile();
   if (state.route === "orders") return renderOrders();
   if (state.route === "referral") return renderReferral();
   if (state.route === "spin") return renderSpin();
@@ -1327,7 +1457,15 @@ document.addEventListener("click", async (event) => {
       render();
     }
     if (action === "play-spin") {
-      const result = await api("/api/spin/play", { method: "POST" });
+      state.spinAnimating = true;
+      state.spinResult = null;
+      render();
+      const [result] = await Promise.all([
+        api("/api/spin/play", { method: "POST" }),
+        wait(1900),
+      ]);
+      state.spinResult = result.prize;
+      state.spinAnimating = false;
       toast(`${result.prize.title}: ${money(result.prize.amount)}`);
       await loadDashboard();
       await loadRouteData("spin");
@@ -1337,10 +1475,10 @@ document.addEventListener("click", async (event) => {
       await navigator.clipboard.writeText(state.referrals?.referral_link || state.referrals?.referral_code || "");
       toast("Referral link copied");
     }
-    if (action === "open-support-chat") {
+    if (action === "open-support-chat" || action === "open-reseller-chat") {
       const url = button.dataset.url || "";
       if (!url) {
-        toast("Support contact not set");
+        toast(action === "open-reseller-chat" ? "Reseller contact not set" : "Support contact not set");
         return;
       }
       if (url.startsWith("https://t.me/") && tg?.openTelegramLink) {
@@ -1492,7 +1630,9 @@ document.addEventListener("click", async (event) => {
       render();
     }
   } catch (error) {
+    state.spinAnimating = false;
     toast(error.message);
+    render();
   }
 });
 
@@ -1517,7 +1657,19 @@ document.addEventListener("submit", async (event) => {
         },
       });
       toast("Payment submitted");
-      await setRoute("wallet");
+      await setRoute("profile");
+    }
+    if (form.id === "language-form") {
+      event.preventDefault();
+      const data = new FormData(form);
+      const result = await api("/api/profile/language", {
+        method: "POST",
+        body: { code: data.get("code") },
+      });
+      if (state.session?.user) state.session.user = result.user;
+      if (state.dashboard?.user) state.dashboard.user = result.user;
+      toast("Language updated");
+      render();
     }
     if (form.id === "currency-form") {
       event.preventDefault();
@@ -1717,7 +1869,26 @@ document.addEventListener("submit", async (event) => {
       });
       state.admin.support = result;
       state.supportSettings = result.support;
+      state.resellerSettings = result.reseller || state.resellerSettings;
       toast("Supporter saved");
+      render();
+    }
+    if (form.id === "admin-reseller-settings-form") {
+      event.preventDefault();
+      const data = new FormData(form);
+      const result = await api("/api/admin/reseller-settings", {
+        method: "POST",
+        body: {
+          display_name: data.get("display_name"),
+          telegram_username: data.get("telegram_username") || "",
+          telegram_user_id: data.get("telegram_user_id") || "",
+          note: data.get("note") || "",
+          enabled: data.get("enabled") === "true",
+        },
+      });
+      state.admin.support = result;
+      state.resellerSettings = result.reseller;
+      toast("Reseller contact saved");
       render();
     }
     if (form.classList.contains("admin-ticket-reply-form")) {

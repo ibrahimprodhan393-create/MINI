@@ -12,6 +12,8 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 - Product details: image, name, feature panel, video/YouTube embed, panel link, stock, 1/7/30 day prices, coupon, buy
 - Product key store: admins upload/delete 1 Day, 7 Days, and 30 Days keys, file links, or panel login lines per product
 - Wallet: add balance request, payment method, transaction ID, screenshot upload
+- Account screen: add fund, payment details, payment request status, daily spin, language, referral, support, profile, currency, reseller apply
+- History screen contains only wallet/transaction history, and Orders screen contains only order history
 - Admin users: add balance or remove balance from any user
 - Checkout payment flow: Wallet Pay auto-deducts; manual payment approval can auto-create the order
 - Manual payments stay admin-approved, and auto payments can be confirmed by a secure webhook
@@ -22,11 +24,13 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 - Orders: invoice ID, pending, approved, delivered, cancelled, refund on cancel
 - Referral link and bonus wallet credit for new user joins
 - Coupons: percent or fixed discount, expiry, max usage
-- Lucky spin with max 0.50 wallet bonus and random 3-4 day cooldown
+- Lucky spin with max 0.50 wallet bonus and one spin every 24 hours per user
+- Language selector in account: English, Bangla, Hindi, Urdu, Arabic, Indonesian, Malay, Nepali, Filipino, Russian, Thai, Turkish
 - Multi-currency selector in profile: AED, BDT, EUR, GBP, IDR, INR, MYR, NPR, PHP, PKR, RUB, SAR, THB, TRY, USD
 - Support page with admin-configurable Telegram inbox button and support tickets with admin replies
+- Admin-configurable reseller Telegram contact for the Apply for Reseller button
 - Telegram notifications for payments, orders, delivery, support
-- Admin dashboard, sections, products, key store, orders, payments, users, coupons, supporter settings, tickets, broadcast
+- Admin dashboard, sections, products, key store, orders, payments, users, coupons, supporter/reseller settings, tickets, broadcast
 
 ## Deploy To Neon And Render
 
