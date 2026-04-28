@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import asyncpg
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -40,6 +40,12 @@ class PaymentRequestIn(BaseModel):
         if value is not None and value not in {1, 7, 30}:
             raise ValueError("Duration must be 1, 7, or 30 days.")
         return value
+
+
+class AutoPaymentConfirmIn(BaseModel):
+    payment_id: int | None = None
+    transaction_id: str | None = Field(default=None, max_length=120)
+    amount: Decimal | None = Field(default=None, gt=0)
 
 
 class OrderCreateIn(BaseModel):
@@ -104,6 +110,11 @@ class ProductIn(BaseModel):
     stock_status: bool = True
     stock_quantity: int | None = Field(default=None, ge=0)
     active: bool = True
+
+
+class ProductKeyUploadIn(BaseModel):
+    product_id: int
+    keys: str = Field(min_length=1, max_length=60000)
 
 
 class CategoryIn(BaseModel):
@@ -203,6 +214,9 @@ def referral_code(telegram_id: int) -> str:
 
 def price_field(duration_days: int) -> str:
     return {1: "price_1_day", 7: "price_7_days", 30: "price_30_days"}[duration_days]
+
+
+MAX_SPIN_BONUS = Decimal("0.50")
 
 
 SUPPORT_SETTING_DEFAULTS = {
@@ -409,13 +423,71 @@ async def compute_coupon_discount(
     return coupon, discount
 
 
+async def auto_deliver_order_key_locked(
+    conn: asyncpg.Connection,
+    order_id: int,
+) -> tuple[asyncpg.Record, asyncpg.Record | None]:
+    order = await conn.fetchrow(
+        "select * from orders where id = $1 for update",
+        order_id,
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    if not order["product_id"] or order["status"] in {"delivered", "cancelled"}:
+        return order, None
+
+    key = await conn.fetchrow(
+        """
+        select *
+          from product_keys
+         where product_id = $1
+           and status = 'available'
+         order by created_at, id
+         for update skip locked
+         limit 1
+        """,
+        order["product_id"],
+    )
+    if not key:
+        return order, None
+
+    delivery_text = f"Product key/file/link:\n{key['key_value']}"
+    delivered = await conn.fetchrow(
+        """
+        update orders
+           set status = 'delivered',
+               delivered_at = now(),
+               delivery_text = $2
+         where id = $1
+     returning *
+        """,
+        order_id,
+        delivery_text,
+    )
+    updated_key = await conn.fetchrow(
+        """
+        update product_keys
+           set status = 'delivered',
+               assigned_order_id = $2,
+               assigned_user_id = $3,
+               delivered_at = now()
+         where id = $1
+     returning *
+        """,
+        key["id"],
+        order_id,
+        order["user_id"],
+    )
+    return delivered, updated_key
+
+
 async def place_wallet_order_locked(
     conn: asyncpg.Connection,
     user_id: int,
     product_id: int,
     duration_days: int,
     coupon_code: str | None,
-) -> tuple[asyncpg.Record, Decimal]:
+) -> tuple[asyncpg.Record, Decimal, asyncpg.Record | None]:
     field = price_field(duration_days)
     fresh_user = await conn.fetchrow("select * from users where id = $1 for update", user_id)
     product = await conn.fetchrow(
@@ -495,7 +567,88 @@ async def place_wallet_order_locked(
             "update products set stock_quantity = greatest(stock_quantity - 1, 0) where id = $1",
             product["id"],
         )
-    return order, total
+    delivered_order, delivered_key = await auto_deliver_order_key_locked(conn, order["id"])
+    return delivered_order, total, delivered_key
+
+
+async def approve_payment_request_locked(
+    conn: asyncpg.Connection,
+    payment_id: int,
+    reviewer_id: int | None,
+) -> dict[str, Any]:
+    payment = await conn.fetchrow(
+        """
+        select p.*, pm.method_type
+          from payment_requests p
+          left join payment_methods pm on pm.id = p.method_id
+         where p.id = $1
+         for update of p
+        """,
+        payment_id,
+    )
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found.")
+    if payment["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Payment already reviewed.")
+
+    updated_user = await conn.fetchrow(
+        """
+        update users
+           set wallet_balance = wallet_balance + $1
+         where id = $2
+     returning *
+        """,
+        payment["amount"],
+        payment["user_id"],
+    )
+    reviewed = await conn.fetchrow(
+        """
+        update payment_requests
+           set status = 'approved', reviewed_by = $2, reviewed_at = now()
+         where id = $1
+     returning *
+        """,
+        payment_id,
+        reviewer_id,
+    )
+    await conn.execute(
+        """
+        insert into wallet_transactions (
+            user_id, type, amount, balance_after, reference_type, reference_id, note
+        )
+        values ($1, 'deposit', $2, $3, 'payment', $4, 'Payment approved')
+        """,
+        payment["user_id"],
+        payment["amount"],
+        updated_user["wallet_balance"],
+        payment_id,
+    )
+
+    auto_order = None
+    auto_total = None
+    auto_key = None
+    if payment["checkout_product_id"] and payment["checkout_duration_days"]:
+        auto_order, auto_total, auto_key = await place_wallet_order_locked(
+            conn,
+            payment["user_id"],
+            payment["checkout_product_id"],
+            payment["checkout_duration_days"],
+            payment["checkout_coupon_code"],
+        )
+        await conn.execute(
+            "update payment_requests set auto_order_id = $2 where id = $1",
+            payment_id,
+            auto_order["id"],
+        )
+
+    return {
+        "payment": payment,
+        "reviewed": reviewed,
+        "updated_user": updated_user,
+        "auto_order": auto_order,
+        "auto_total": auto_total,
+        "auto_key": auto_key,
+    }
 
 
 @app.on_event("startup")
@@ -513,6 +666,11 @@ async def shutdown() -> None:
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.head("/health")
+async def health_head() -> Response:
+    return Response(status_code=200)
 
 
 @app.post("/telegram/webhook")
@@ -753,7 +911,7 @@ async def create_order(
 ) -> dict[str, Any]:
     async with connection() as conn:
         async with conn.transaction():
-            order, total = await place_wallet_order_locked(
+            order, total, delivered_key = await place_wallet_order_locked(
                 conn,
                 user["id"],
                 data.product_id,
@@ -761,13 +919,14 @@ async def create_order(
                 data.coupon_code,
             )
 
+    status_text = "Delivered automatically" if delivered_key else "Pending"
     await notifier.notify_admins(
-        f"New order\nInvoice: <b>{order['invoice_id']}</b>\nUser: {user['first_name']} ({user['telegram_id']})\nTotal: {total}"
+        f"New order\nInvoice: <b>{order['invoice_id']}</b>\nUser: {user['first_name']} ({user['telegram_id']})\nTotal: {total}\nStatus: {status_text}"
     )
-    await notifier.send_message(
-        user["telegram_id"],
-        f"Order placed\nInvoice: <b>{order['invoice_id']}</b>\nStatus: Pending",
-    )
+    user_message = f"Order placed\nInvoice: <b>{order['invoice_id']}</b>\nStatus: {status_text}"
+    if delivered_key:
+        user_message += f"\n\n{order['delivery_text']}"
+    await notifier.send_message(user["telegram_id"], user_message)
     return {"order": jsonable(order)}
 
 
@@ -878,19 +1037,26 @@ async def spin_info(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
             "select * from spin_history where user_id = $1 order by created_at desc limit 20",
             user["id"],
         )
-        today_count = await conn.fetchval(
+        lock = await conn.fetchrow(
             """
-            select count(*)
-              from spin_history
-             where user_id = $1
-               and created_at::date = current_date
+            select next_spin_at,
+                   (next_spin_at is null or next_spin_at <= now()) as can_spin
+              from users
+             where id = $1
             """,
             user["id"],
         )
+    prize_list = []
+    for prize in prizes:
+        item = jsonable(prize)
+        item["amount"] = jsonable(min(Decimal(prize["amount"]), MAX_SPIN_BONUS))
+        prize_list.append(item)
     return {
-        "prizes": jsonable(prizes),
+        "prizes": prize_list,
         "history": jsonable(history),
-        "spins_left": max(0, 1 - int(today_count or 0)),
+        "spins_left": 1 if lock and lock["can_spin"] else 0,
+        "next_spin_at": jsonable(lock["next_spin_at"] if lock else None),
+        "max_bonus": jsonable(MAX_SPIN_BONUS),
     }
 
 
@@ -898,17 +1064,18 @@ async def spin_info(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
 async def spin_play(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dict[str, Any]:
     async with connection() as conn:
         async with conn.transaction():
-            today_count = await conn.fetchval(
+            locked_user = await conn.fetchrow(
                 """
-                select count(*)
-                  from spin_history
-                 where user_id = $1
-                   and created_at::date = current_date
+                select wallet_balance, next_spin_at,
+                       (next_spin_at is null or next_spin_at <= now()) as can_spin
+                  from users
+                 where id = $1
+                 for update
                 """,
                 user["id"],
             )
-            if int(today_count or 0) >= 1:
-                raise HTTPException(status_code=400, detail="Daily spin already used.")
+            if locked_user and not locked_user["can_spin"]:
+                raise HTTPException(status_code=400, detail=f"Spin locked until {locked_user['next_spin_at']}.")
             prizes = await conn.fetch("select * from spin_prizes where active = true")
             if not prizes:
                 raise HTTPException(status_code=404, detail="No spin prizes configured.")
@@ -916,20 +1083,32 @@ async def spin_play(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
             for prize in prizes:
                 weighted.extend([prize] * max(1, int(prize["weight"])))
             prize = random.choice(weighted)
-            amount = Decimal(prize["amount"])
+            amount = min(Decimal(prize["amount"]), MAX_SPIN_BONUS).quantize(Decimal("0.01"))
+            cooldown_days = random.choice([3, 4])
             if amount > 0:
                 updated_user = await conn.fetchrow(
                     """
                     update users
-                       set wallet_balance = wallet_balance + $1
+                       set wallet_balance = wallet_balance + $1,
+                           next_spin_at = now() + ($3::text || ' days')::interval
                      where id = $2
-                 returning wallet_balance
+                 returning wallet_balance, next_spin_at
                     """,
                     amount,
                     user["id"],
+                    cooldown_days,
                 )
             else:
-                updated_user = await conn.fetchrow("select wallet_balance from users where id = $1", user["id"])
+                updated_user = await conn.fetchrow(
+                    """
+                    update users
+                       set next_spin_at = now() + ($2::text || ' days')::interval
+                     where id = $1
+                 returning wallet_balance, next_spin_at
+                    """,
+                    user["id"],
+                    cooldown_days,
+                )
             history = await conn.fetchrow(
                 """
                 insert into spin_history (user_id, prize_id, prize_title, amount)
@@ -955,7 +1134,15 @@ async def spin_play(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
                     history["id"],
                     prize["title"],
                 )
-    return {"prize": jsonable(prize), "history": jsonable(history), "balance": jsonable(updated_user["wallet_balance"])}
+    prize_payload = jsonable(prize)
+    prize_payload["amount"] = jsonable(amount)
+    return {
+        "prize": prize_payload,
+        "history": jsonable(history),
+        "balance": jsonable(updated_user["wallet_balance"]),
+        "next_spin_at": jsonable(updated_user["next_spin_at"]),
+        "cooldown_days": cooldown_days,
+    }
 
 
 @app.post("/api/tickets")
@@ -1072,7 +1259,9 @@ async def admin_products(admin: Annotated[asyncpg.Record, Depends(admin_user)]) 
     async with connection() as conn:
         rows = await conn.fetch(
             """
-            select p.*, c.name as category_name
+            select p.*, c.name as category_name,
+                   (select count(*) from product_keys k where k.product_id = p.id and k.status = 'available') as available_keys,
+                   (select count(*) from product_keys k where k.product_id = p.id and k.status = 'delivered') as delivered_keys
               from products p
               left join categories c on c.key = p.category_key
              order by p.created_at desc
@@ -1080,6 +1269,86 @@ async def admin_products(admin: Annotated[asyncpg.Record, Depends(admin_user)]) 
         )
         cats = await conn.fetch("select * from categories order by sort_order")
     return {"products": jsonable(rows), "categories": jsonable(cats)}
+
+
+@app.get("/api/admin/product-keys")
+async def admin_product_keys(
+    admin: Annotated[asyncpg.Record, Depends(admin_user)],
+    product_id: int | None = None,
+) -> dict[str, Any]:
+    async with connection() as conn:
+        products = await conn.fetch(
+            """
+            select p.id, p.name, c.name as category_name,
+                   (select count(*) from product_keys k where k.product_id = p.id and k.status = 'available') as available_keys,
+                   (select count(*) from product_keys k where k.product_id = p.id and k.status = 'delivered') as delivered_keys
+              from products p
+              left join categories c on c.key = p.category_key
+             order by c.sort_order nulls last, p.name
+            """
+        )
+        keys = await conn.fetch(
+            """
+            select k.*, p.name as product_name, c.name as category_name,
+                   o.invoice_id, u.first_name, u.username, u.telegram_id
+              from product_keys k
+              join products p on p.id = k.product_id
+              left join categories c on c.key = p.category_key
+              left join orders o on o.id = k.assigned_order_id
+              left join users u on u.id = k.assigned_user_id
+             where ($1::bigint is null or k.product_id = $1)
+             order by k.created_at desc
+             limit 500
+            """,
+            product_id,
+        )
+    return {"products": jsonable(products), "keys": jsonable(keys)}
+
+
+@app.post("/api/admin/product-keys")
+async def admin_upload_product_keys(
+    data: ProductKeyUploadIn,
+    admin: Annotated[asyncpg.Record, Depends(admin_user)],
+) -> dict[str, Any]:
+    raw_keys = []
+    seen = set()
+    for line in data.keys.splitlines():
+        key = line.strip()
+        if key and key not in seen:
+            raw_keys.append(key)
+            seen.add(key)
+    if not raw_keys:
+        raise HTTPException(status_code=400, detail="No keys found.")
+    if len(raw_keys) > 1000:
+        raise HTTPException(status_code=400, detail="Upload up to 1000 keys at a time.")
+
+    async with connection() as conn:
+        product = await conn.fetchrow("select id from products where id = $1", data.product_id)
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found.")
+        rows = await conn.fetch(
+            """
+            insert into product_keys (product_id, key_value, uploaded_by)
+            select $1, unnest($2::text[]), $3
+            returning *
+            """,
+            data.product_id,
+            raw_keys,
+            admin["id"],
+        )
+    return {"inserted": len(rows), "keys": jsonable(rows)}
+
+
+@app.delete("/api/admin/product-keys/{key_id}")
+async def admin_delete_product_key(
+    key_id: int,
+    admin: Annotated[asyncpg.Record, Depends(admin_user)],
+) -> dict[str, str]:
+    async with connection() as conn:
+        result = await conn.execute("delete from product_keys where id = $1", key_id)
+    if result.endswith("0"):
+        raise HTTPException(status_code=404, detail="Key not found.")
+    return {"status": "deleted"}
 
 
 @app.get("/api/admin/categories")
@@ -1435,63 +1704,15 @@ async def approve_payment(
     payment_id: int,
     admin: Annotated[asyncpg.Record, Depends(admin_user)],
 ) -> dict[str, Any]:
-    auto_order = None
-    auto_total = None
     async with connection() as conn:
         async with conn.transaction():
-            payment = await conn.fetchrow(
-                "select * from payment_requests where id = $1 for update",
-                payment_id,
-            )
-            if not payment:
-                raise HTTPException(status_code=404, detail="Payment not found.")
-            if payment["status"] != "pending":
-                raise HTTPException(status_code=400, detail="Payment already reviewed.")
-            updated_user = await conn.fetchrow(
-                """
-                update users
-                   set wallet_balance = wallet_balance + $1
-                 where id = $2
-             returning *
-                """,
-                payment["amount"],
-                payment["user_id"],
-            )
-            reviewed = await conn.fetchrow(
-                """
-                update payment_requests
-                   set status = 'approved', reviewed_by = $2, reviewed_at = now()
-                 where id = $1
-             returning *
-                """,
-                payment_id,
-                admin["id"],
-            )
-            await conn.execute(
-                """
-                insert into wallet_transactions (
-                    user_id, type, amount, balance_after, reference_type, reference_id, note
-                )
-                values ($1, 'deposit', $2, $3, 'payment', $4, 'Payment approved')
-                """,
-                payment["user_id"],
-                payment["amount"],
-                updated_user["wallet_balance"],
-                payment_id,
-            )
-            if payment["checkout_product_id"] and payment["checkout_duration_days"]:
-                auto_order, auto_total = await place_wallet_order_locked(
-                    conn,
-                    payment["user_id"],
-                    payment["checkout_product_id"],
-                    payment["checkout_duration_days"],
-                    payment["checkout_coupon_code"],
-                )
-                await conn.execute(
-                    "update payment_requests set auto_order_id = $2 where id = $1",
-                    payment_id,
-                    auto_order["id"],
-                )
+            result = await approve_payment_request_locked(conn, payment_id, admin["id"])
+    payment = result["payment"]
+    reviewed = result["reviewed"]
+    updated_user = result["updated_user"]
+    auto_order = result["auto_order"]
+    auto_total = result["auto_total"]
+    auto_key = result["auto_key"]
     await notifier.send_message(
         updated_user["telegram_id"],
         f"Payment approved\nAmount: <b>{payment['amount']}</b>\nBalance: {updated_user['wallet_balance']}",
@@ -1502,7 +1723,8 @@ async def approve_payment(
         )
         await notifier.send_message(
             updated_user["telegram_id"],
-            f"Order placed automatically\nInvoice: <b>{auto_order['invoice_id']}</b>\nStatus: Pending",
+            f"Order placed automatically\nInvoice: <b>{auto_order['invoice_id']}</b>\nStatus: {'Delivered' if auto_key else 'Pending'}"
+            + (f"\n\n{auto_order['delivery_text']}" if auto_key else ""),
         )
     return {"payment": jsonable(reviewed)}
 
@@ -1536,6 +1758,75 @@ async def reject_payment(
         f"Payment rejected\nReason: {reviewed['rejection_reason']}",
     )
     return {"payment": jsonable(reviewed)}
+
+
+@app.delete("/api/admin/payments/{payment_id}")
+async def admin_delete_rejected_payment(
+    payment_id: int,
+    admin: Annotated[asyncpg.Record, Depends(admin_user)],
+) -> dict[str, str]:
+    async with connection() as conn:
+        result = await conn.execute(
+            "delete from payment_requests where id = $1 and status = 'rejected'",
+            payment_id,
+        )
+    if result.endswith("0"):
+        raise HTTPException(status_code=404, detail="Rejected payment not found.")
+    return {"status": "deleted"}
+
+
+@app.post("/api/auto-payments/confirm")
+async def auto_confirm_payment(
+    data: AutoPaymentConfirmIn,
+    x_auto_payment_secret: Annotated[str | None, Header(alias="X-Auto-Payment-Secret")] = None,
+) -> dict[str, Any]:
+    if not settings.auto_payment_webhook_secret:
+        raise HTTPException(status_code=503, detail="Auto payment webhook is not configured.")
+    if x_auto_payment_secret != settings.auto_payment_webhook_secret:
+        raise HTTPException(status_code=403, detail="Invalid auto payment secret.")
+
+    async with connection() as conn:
+        async with conn.transaction():
+            payment_id = data.payment_id
+            if not payment_id:
+                if not data.transaction_id:
+                    raise HTTPException(status_code=400, detail="payment_id or transaction_id is required.")
+                payment_id = await conn.fetchval(
+                    """
+                    select p.id
+                      from payment_requests p
+                      join payment_methods pm on pm.id = p.method_id
+                     where p.status = 'pending'
+                       and pm.method_type = 'auto'
+                       and p.transaction_id = $1
+                       and ($2::numeric is null or p.amount = $2)
+                     order by p.created_at
+                     limit 1
+                    """,
+                    data.transaction_id.strip(),
+                    data.amount,
+                )
+                if not payment_id:
+                    raise HTTPException(status_code=404, detail="Pending auto payment not found.")
+            result = await approve_payment_request_locked(conn, payment_id, None)
+            if result["payment"]["method_type"] != "auto":
+                raise HTTPException(status_code=400, detail="Payment method is not auto.")
+
+    payment = result["payment"]
+    updated_user = result["updated_user"]
+    auto_order = result["auto_order"]
+    auto_key = result["auto_key"]
+    await notifier.send_message(
+        updated_user["telegram_id"],
+        f"Auto payment approved\nAmount: <b>{payment['amount']}</b>\nBalance: {updated_user['wallet_balance']}",
+    )
+    if auto_order:
+        await notifier.send_message(
+            updated_user["telegram_id"],
+            f"Order placed automatically\nInvoice: <b>{auto_order['invoice_id']}</b>\nStatus: {'Delivered' if auto_key else 'Pending'}"
+            + (f"\n\n{auto_order['delivery_text']}" if auto_key else ""),
+        )
+    return {"payment": jsonable(result["reviewed"]), "auto_order": jsonable(auto_order)}
 
 
 @app.get("/api/admin/orders")
@@ -1593,26 +1884,39 @@ async def deliver_order(
     admin: Annotated[asyncpg.Record, Depends(admin_user)],
 ) -> dict[str, Any]:
     async with connection() as conn:
-        order = await conn.fetchrow(
-            """
-            update orders
-               set status = 'delivered',
-                   delivered_at = now(),
-                   delivery_text = $2,
-                   admin_note = $3
-             where id = $1 and status in ('pending', 'approved')
-         returning *
-            """,
-            order_id,
-            data.delivery_text,
-            data.note,
-        )
-        if not order:
-            raise HTTPException(status_code=404, detail="Order not found or already closed.")
+        async with conn.transaction():
+            if data.delivery_text:
+                order = await conn.fetchrow(
+                    """
+                    update orders
+                       set status = 'delivered',
+                           delivered_at = now(),
+                           delivery_text = $2,
+                           admin_note = $3
+                     where id = $1 and status in ('pending', 'approved')
+                 returning *
+                    """,
+                    order_id,
+                    data.delivery_text,
+                    data.note,
+                )
+                key = None
+            else:
+                order, key = await auto_deliver_order_key_locked(conn, order_id)
+                if order["status"] != "delivered":
+                    raise HTTPException(status_code=400, detail="No available key. Enter manual delivery text or upload keys first.")
+                if data.note:
+                    order = await conn.fetchrow(
+                        "update orders set admin_note = $2 where id = $1 returning *",
+                        order_id,
+                        data.note,
+                    )
+            if not order:
+                raise HTTPException(status_code=404, detail="Order not found or already closed.")
         target = await conn.fetchrow("select telegram_id from users where id = $1", order["user_id"])
     await notifier.send_message(
         target["telegram_id"],
-        f"Order delivered\nInvoice: <b>{order['invoice_id']}</b>\n{data.delivery_text or ''}",
+        f"Order delivered\nInvoice: <b>{order['invoice_id']}</b>\n{order['delivery_text'] or ''}",
     )
     return {"order": jsonable(order)}
 
@@ -1703,6 +2007,11 @@ async def admin_adjust_balance(
 ) -> dict[str, Any]:
     async with connection() as conn:
         async with conn.transaction():
+            current = await conn.fetchrow("select * from users where id = $1 for update", user_id)
+            if not current:
+                raise HTTPException(status_code=404, detail="User not found.")
+            if Decimal(current["wallet_balance"]) + data.amount < 0:
+                raise HTTPException(status_code=400, detail="Balance cannot go below zero.")
             user = await conn.fetchrow(
                 """
                 update users
@@ -1713,8 +2022,6 @@ async def admin_adjust_balance(
                 data.amount,
                 user_id,
             )
-            if not user:
-                raise HTTPException(status_code=404, detail="User not found.")
             await conn.execute(
                 """
                 insert into wallet_transactions (
@@ -1728,6 +2035,11 @@ async def admin_adjust_balance(
                 admin["id"],
                 data.reason,
             )
+    action = "added" if data.amount > 0 else "removed"
+    await notifier.send_message(
+        user["telegram_id"],
+        f"Wallet balance {action}\nAmount: <b>{abs(data.amount)}</b>\nBalance: {user['wallet_balance']}\nReason: {data.reason}",
+    )
     return {"user": jsonable(user)}
 
 

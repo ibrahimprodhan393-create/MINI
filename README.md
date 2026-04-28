@@ -10,17 +10,22 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 - Product categories: Android, iPhone, PC, Root Device, Premium Tools, Subscription Plans
 - Nested sections/sub-sections controlled from admin
 - Product details: image, name, feature panel, video/YouTube embed, panel link, stock, 1/7/30 day prices, coupon, buy
+- Product key store: admins upload/delete keys, file links, or panel login lines per product
 - Wallet: add balance request, payment method, transaction ID, screenshot upload
+- Admin users: add balance or remove balance from any user
 - Checkout payment flow: Wallet Pay auto-deducts; manual payment approval can auto-create the order
+- Manual payments stay admin-approved, and auto payments can be confirmed by a secure webhook
+- Rejected payments can be removed from the admin panel
+- Automatic delivery: if a stored key is available, paid orders are delivered instantly
 - Admin payment method editor: name, instructions, account details, QR image, active/off
 - Orders: invoice ID, pending, approved, delivered, cancelled, refund on cancel
 - Referral link and bonus wallet credit for new user joins
 - Coupons: percent or fixed discount, expiry, max usage
-- Lucky spin with daily spin and wallet bonus rewards
+- Lucky spin with max 0.50 wallet bonus and random 3-4 day cooldown
 - Multi-currency selector in profile: AED, BDT, EUR, GBP, IDR, INR, MYR, NPR, PHP, PKR, RUB, SAR, THB, TRY, USD
 - Support page with admin-configurable Telegram inbox button and support tickets with admin replies
 - Telegram notifications for payments, orders, delivery, support
-- Admin dashboard, products, orders, payments, users, coupons, supporter settings, tickets, broadcast
+- Admin dashboard, sections, products, key store, orders, payments, users, coupons, supporter settings, tickets, broadcast
 
 ## Deploy To Neon And Render
 
@@ -57,6 +62,7 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
    BOT_USERNAME
    MINI_APP_SHORT_NAME
    TELEGRAM_WEBHOOK_SECRET
+   AUTO_PAYMENT_WEBHOOK_SECRET
    ADMIN_TELEGRAM_IDS
    PUBLIC_APP_URL
    AUTO_MIGRATE=true
@@ -108,4 +114,36 @@ The full schema is in `db/schema.sql`. You can run it manually in the Neon SQL e
 
 ```text
 AUTO_MIGRATE=true
+```
+
+## Keeping Render Awake
+
+Render Free web services spin down after 15 minutes without incoming traffic. For 24-hour availability, use a paid Render instance or set an external monitor to ping:
+
+```text
+https://your-render-service.onrender.com/health
+```
+
+Use `GET` if UptimeRobot asks for a method. The app also accepts `HEAD` on `/health` for monitors that use HEAD checks.
+
+## Auto Payment Webhook
+
+Set `AUTO_PAYMENT_WEBHOOK_SECRET`, then your payment automation can approve a pending auto payment:
+
+```http
+POST /api/auto-payments/confirm
+X-Auto-Payment-Secret: your-secret
+
+{
+  "payment_id": 123
+}
+```
+
+You can also match by transaction ID and amount:
+
+```json
+{
+  "transaction_id": "TX123",
+  "amount": 10
+}
 ```

@@ -32,6 +32,7 @@ const state = {
   editingCategory: null,
   editingPaymentMethod: null,
   editingCoupon: null,
+  keyProductId: null,
 };
 
 let mainButtonBound = false;
@@ -266,6 +267,10 @@ async function loadAdminData(tab) {
   if (tab === "dashboard") state.admin.dashboard = await api("/api/admin/dashboard");
   if (tab === "categories") state.admin.categories = await api("/api/admin/categories");
   if (tab === "products") state.admin.products = await api("/api/admin/products");
+  if (tab === "keys") {
+    const query = state.keyProductId ? `?product_id=${encodeURIComponent(state.keyProductId)}` : "";
+    state.admin.keys = await api(`/api/admin/product-keys${query}`);
+  }
   if (tab === "payments") state.admin.payments = await api("/api/admin/payments");
   if (tab === "orders") state.admin.orders = await api("/api/admin/orders");
   if (tab === "users") state.admin.users = await api("/api/admin/users");
@@ -604,14 +609,16 @@ function renderReferral() {
 function renderSpin() {
   const data = state.spin || {};
   const prizes = data.prizes || [];
+  const canSpin = Number(data.spins_left || 0) > 0;
   return `
     <div class="section-head"><h3>Lucky Spin</h3><button data-action="set-route" data-route="profile">Back</button></div>
     <section class="panel spin-panel">
       <div class="spin-wheel">
         ${prizes.slice(0, 8).map((prize) => `<span>${escapeHtml(prize.title)}</span>`).join("")}
       </div>
-      <p class="muted">Daily spins left: ${data.spins_left ?? 0}</p>
-      <button class="action-btn" data-action="play-spin" type="button">${icon("rotate-cw")} Spin Now</button>
+      <p class="muted">Max bonus: ${money(data.max_bonus ?? 0.5)}</p>
+      <p class="muted">${canSpin ? "Spin available now" : `Next spin: ${shortDate(data.next_spin_at)}`}</p>
+      <button class="action-btn" data-action="play-spin" type="button" ${canSpin ? "" : "disabled"}>${icon("rotate-cw")} Spin Now</button>
     </section>
     <div class="section-head"><h3>Spin History</h3></div>
     <section class="table-lite">
@@ -751,6 +758,7 @@ function adminTabs() {
     ["dashboard", "Dashboard"],
     ["categories", "Sections"],
     ["products", "Products"],
+    ["keys", "Keys"],
     ["orders", "Orders"],
     ["payments", "Payments"],
     ["users", "Users"],
@@ -778,6 +786,7 @@ function renderAdminTab() {
   if (state.adminTab === "dashboard") return renderAdminDashboard();
   if (state.adminTab === "categories") return renderAdminCategories();
   if (state.adminTab === "products") return renderAdminProducts();
+  if (state.adminTab === "keys") return renderAdminKeys();
   if (state.adminTab === "orders") return renderAdminOrders();
   if (state.adminTab === "payments") return renderAdminPayments();
   if (state.adminTab === "users") return renderAdminUsers();
@@ -894,12 +903,58 @@ function renderAdminProducts() {
         <article class="admin-row">
           <div class="status-row"><h4>${escapeHtml(product.name)}</h4>${product.stock_status ? `<span class="badge success">Stock</span>` : `<span class="badge danger">Off</span>`}</div>
           <div class="muted">${escapeHtml(product.category_name || product.category_key)} - ${money(product.price_1_day)} / ${money(product.price_7_days)} / ${money(product.price_30_days)}</div>
+          <div class="muted">Keys: ${Number(product.available_keys || 0)} available - ${Number(product.delivered_keys || 0)} delivered</div>
           <div class="two-col">
             <button class="action-btn secondary" data-action="edit-product" data-id="${product.id}" type="button">${icon("pencil")} Edit</button>
-            <button class="action-btn danger" data-action="delete-product" data-id="${product.id}" type="button">${icon("trash-2")} Delete</button>
+            <button class="action-btn secondary" data-action="manage-product-keys" data-id="${product.id}" type="button">${icon("key-round")} Keys</button>
           </div>
+          <button class="action-btn danger" data-action="delete-product" data-id="${product.id}" type="button">${icon("trash-2")} Delete</button>
         </article>
       `).join("") || `<div class="empty">No products</div>`}
+    </section>
+  `;
+}
+
+function renderAdminKeys() {
+  const data = state.admin.keys || {};
+  const products = data.products || [];
+  const keys = data.keys || [];
+  const selectedId = state.keyProductId ? String(state.keyProductId) : "";
+  return `
+    <form class="panel form-grid" id="admin-key-filter-form">
+      <div class="field">
+        <label>View keys for product</label>
+        <select name="product_id">
+          <option value="">All products</option>
+          ${products.map((product) => `<option value="${product.id}" ${String(product.id) === selectedId ? "selected" : ""}>${escapeHtml(product.name)} (${Number(product.available_keys || 0)} available)</option>`).join("")}
+        </select>
+      </div>
+      <button class="action-btn secondary" type="submit">${icon("list-filter")} Load Keys</button>
+    </form>
+    <form class="panel form-grid" id="admin-key-upload-form">
+      <div class="field">
+        <label>Product</label>
+        <select name="product_id" required>
+          ${products.map((product) => `<option value="${product.id}" ${String(product.id) === selectedId ? "selected" : ""}>${escapeHtml(product.name)} - ${escapeHtml(product.category_name || "No section")}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field">
+        <label>Keys / files / links</label>
+        <textarea name="keys" placeholder="One key, file link, or login panel per line" required></textarea>
+      </div>
+      <button class="action-btn" type="submit">${icon("upload")} Upload Keys</button>
+    </form>
+    <div class="section-head"><h3>Stored Keys</h3></div>
+    <section class="table-lite">
+      ${keys.map((key) => `
+        <article class="admin-row">
+          <div class="status-row"><h4>${escapeHtml(key.product_name)}</h4>${statusBadge(key.status)}</div>
+          <div class="muted">${escapeHtml(key.category_name || "No section")} - ${shortDate(key.created_at)}</div>
+          <div class="key-value">${escapeHtml(key.key_value)}</div>
+          ${key.invoice_id ? `<div class="muted">Delivered to ${escapeHtml(key.first_name || key.username || key.telegram_id || "user")} - Invoice ${escapeHtml(key.invoice_id)}</div>` : ""}
+          <button class="action-btn danger" data-action="delete-product-key" data-id="${key.id}" type="button">${icon("trash-2")} Delete Key</button>
+        </article>
+      `).join("") || `<div class="empty">No keys found</div>`}
     </section>
   `;
 }
@@ -968,10 +1023,11 @@ function renderAdminPayments() {
           <div>${escapeHtml(payment.first_name)} - ${escapeHtml(payment.method_name)}</div>
           <div class="muted">TXID ${escapeHtml(payment.transaction_id)} - ${shortDate(payment.created_at)}</div>
           ${payment.screenshot_data ? `<img class="screenshot" src="${escapeHtml(payment.screenshot_data)}" alt="Payment screenshot" />` : ""}
-          <div class="two-col">
+          ${payment.status === "pending" ? `<div class="two-col">
             <button class="action-btn secondary" data-action="approve-payment" data-id="${payment.id}" type="button">${icon("check")} Approve</button>
             <button class="action-btn danger" data-action="reject-payment" data-id="${payment.id}" type="button">${icon("x")} Reject</button>
-          </div>
+          </div>` : ""}
+          ${payment.status === "rejected" ? `<button class="action-btn danger" data-action="delete-payment" data-id="${payment.id}" type="button">${icon("trash-2")} Remove Rejected Payment</button>` : ""}
         </article>
       `).join("") || `<div class="empty">No payments</div>`}
     </section>
@@ -992,7 +1048,11 @@ function renderAdminUsers() {
           <div class="muted">@${escapeHtml(user.username || "-")} - ID ${escapeHtml(user.telegram_id)}</div>
           <div class="muted">Balance ${money(user.wallet_balance)} - Orders ${user.order_count} - Payments ${user.payment_count}</div>
           <div class="two-col">
-            <button class="action-btn secondary" data-action="adjust-balance" data-id="${user.id}" type="button">${icon("wallet-cards")} Balance</button>
+            <button class="action-btn secondary" data-action="add-balance" data-id="${user.id}" type="button">${icon("plus")} Add Balance</button>
+            <button class="action-btn danger" data-action="remove-balance" data-id="${user.id}" type="button">${icon("minus")} Remove</button>
+          </div>
+          <div class="two-col">
+            <button class="action-btn secondary" data-action="adjust-balance" data-id="${user.id}" type="button">${icon("wallet-cards")} Custom</button>
             <button class="action-btn ${user.is_banned ? "secondary" : "danger"}" data-action="${user.is_banned ? "unban-user" : "ban-user"}" data-id="${user.id}" type="button">${icon(user.is_banned ? "unlock" : "ban")} ${user.is_banned ? "Unban" : "Ban"}</button>
           </div>
         </article>
@@ -1287,10 +1347,21 @@ document.addEventListener("click", async (event) => {
       state.editingProduct = list.find((item) => String(item.id) === String(button.dataset.id));
       render();
     }
+    if (action === "manage-product-keys") {
+      state.keyProductId = Number(button.dataset.id);
+      await loadAdminData("keys");
+      render();
+    }
     if (action === "delete-product") {
       await api(`/api/admin/products/${button.dataset.id}`, { method: "DELETE" });
       toast("Product deleted");
       await loadAdminData("products");
+      render();
+    }
+    if (action === "delete-product-key") {
+      await api(`/api/admin/product-keys/${button.dataset.id}`, { method: "DELETE" });
+      toast("Key deleted");
+      await loadAdminData("keys");
       render();
     }
     if (action === "approve-payment") {
@@ -1303,6 +1374,12 @@ document.addEventListener("click", async (event) => {
       const reason = window.prompt("Reject reason") || "Rejected by admin";
       await api(`/api/admin/payments/${button.dataset.id}/reject`, { method: "POST", body: { reason } });
       toast("Payment rejected");
+      await loadAdminData("payments");
+      render();
+    }
+    if (action === "delete-payment") {
+      await api(`/api/admin/payments/${button.dataset.id}`, { method: "DELETE" });
+      toast("Rejected payment removed");
       await loadAdminData("payments");
       render();
     }
@@ -1328,7 +1405,7 @@ document.addEventListener("click", async (event) => {
       render();
     }
     if (action === "deliver-order") {
-      const deliveryText = window.prompt("Product key/file/link") || "";
+      const deliveryText = window.prompt("Product key/file/link. Leave blank to use next stored key.") || "";
       await api(`/api/admin/orders/${button.dataset.id}/deliver`, { method: "POST", body: { delivery_text: deliveryText } });
       toast("Order delivered");
       await loadAdminData("orders");
@@ -1346,6 +1423,18 @@ document.addEventListener("click", async (event) => {
       if (!amount) return;
       const reason = window.prompt("Reason") || "Admin adjustment";
       await api(`/api/admin/users/${button.dataset.id}/balance`, { method: "POST", body: { amount, reason } });
+      toast("Balance updated");
+      await loadAdminData("users");
+      render();
+    }
+    if (action === "add-balance" || action === "remove-balance") {
+      const amount = Number(window.prompt(action === "add-balance" ? "Amount to add" : "Amount to remove") || "0");
+      if (!amount) return;
+      const reason = window.prompt("Reason") || (action === "add-balance" ? "Admin balance add" : "Admin balance remove");
+      await api(`/api/admin/users/${button.dataset.id}/balance`, {
+        method: "POST",
+        body: { amount: action === "add-balance" ? Math.abs(amount) : -Math.abs(amount), reason },
+      });
       toast("Balance updated");
       await loadAdminData("users");
       render();
@@ -1509,6 +1598,28 @@ document.addEventListener("submit", async (event) => {
       state.editingCategory = null;
       toast("Section saved");
       await loadAdminData("categories");
+      render();
+    }
+    if (form.id === "admin-key-filter-form") {
+      event.preventDefault();
+      const value = new FormData(form).get("product_id");
+      state.keyProductId = value ? Number(value) : null;
+      await loadAdminData("keys");
+      render();
+    }
+    if (form.id === "admin-key-upload-form") {
+      event.preventDefault();
+      const data = new FormData(form);
+      const result = await api("/api/admin/product-keys", {
+        method: "POST",
+        body: {
+          product_id: Number(data.get("product_id")),
+          keys: data.get("keys"),
+        },
+      });
+      state.keyProductId = Number(data.get("product_id"));
+      toast(`${result.inserted} keys uploaded`);
+      await loadAdminData("keys");
       render();
     }
     if (form.id === "admin-payment-method-form") {

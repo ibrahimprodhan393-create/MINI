@@ -26,6 +26,7 @@ class Settings:
     bot_username = os.getenv("BOT_USERNAME", "")
     mini_app_short_name = os.getenv("MINI_APP_SHORT_NAME", "")
     telegram_webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+    auto_payment_webhook_secret = os.getenv("AUTO_PAYMENT_WEBHOOK_SECRET", "")
     admin_telegram_ids = _int_list(os.getenv("ADMIN_TELEGRAM_IDS"))
     debug = _bool(os.getenv("DEBUG"), False)
     auto_migrate = _bool(os.getenv("AUTO_MIGRATE"), True)
