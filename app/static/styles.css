@@ -561,6 +561,29 @@ main {
   white-space: pre-wrap;
 }
 
+.feature-box {
+  margin: 10px 0;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  color: #d6d9e5;
+  padding: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  font-size: 13px;
+}
+
+.video-panel {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 0;
+  border-radius: 16px;
+  background: #05060a;
+  margin: 12px 0;
+  object-fit: cover;
+}
+
 .duration-list {
   display: grid;
   gap: 12px;
@@ -596,6 +619,112 @@ main {
 .duration-card .action-btn {
   width: 86px;
   min-height: 44px;
+}
+
+.payment-option {
+  width: 100%;
+  min-height: 72px;
+  border-radius: 16px;
+  background: linear-gradient(145deg, rgba(22, 23, 33, 0.98), rgba(12, 13, 20, 0.98));
+  color: var(--text);
+  border: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  text-align: left;
+  padding: 12px;
+}
+
+.payment-option.active {
+  border-color: rgba(255, 49, 72, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(255, 49, 72, 0.24);
+}
+
+.payment-option.disabled {
+  opacity: 0.58;
+}
+
+.payment-option small {
+  display: block;
+  color: var(--muted);
+  margin-top: 4px;
+  line-height: 1.35;
+}
+
+.support-card {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.support-card h3,
+.support-card p {
+  margin: 0;
+}
+
+.support-card p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+  margin-top: 5px;
+}
+
+.support-card small {
+  display: block;
+  color: #ff8d9a;
+  font-weight: 900;
+  margin-top: 8px;
+}
+
+.support-card .action-btn {
+  grid-column: 1 / -1;
+}
+
+.support-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, var(--accent), #d51d32);
+  color: white;
+}
+
+.spin-panel {
+  text-align: center;
+}
+
+.spin-wheel {
+  width: 230px;
+  height: 230px;
+  margin: 4px auto 18px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  position: relative;
+  overflow: hidden;
+  background:
+    conic-gradient(from 0deg, #ff3148, #151721 35deg, #ffb84b 75deg, #151721 115deg, #35d37e 160deg, #151721 205deg, #ff3148 250deg, #151721 310deg, #ff3148);
+  box-shadow: 0 20px 50px rgba(255, 49, 72, 0.22);
+}
+
+.spin-wheel::after {
+  content: "SPIN";
+  width: 82px;
+  height: 82px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: #101118;
+  color: white;
+  font-weight: 900;
+  border: 6px solid rgba(255, 255, 255, 0.12);
+}
+
+.spin-wheel span {
+  display: none;
 }
 
 .segmented {

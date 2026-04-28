@@ -5,22 +5,32 @@ const state = {
   route: "home",
   session: null,
   dashboard: null,
+  currency: null,
+  currencies: [],
   categories: [],
   products: [],
   categoryKey: null,
+  categoryStack: [],
+  categoryChildren: [],
   categoryProducts: [],
   product: null,
   selectedDuration: 1,
+  checkout: null,
+  selectedPaymentMethodId: null,
   methods: [],
   payments: [],
   transactions: [],
   orders: [],
   referrals: null,
+  spin: null,
   tickets: [],
   ticketMessages: [],
+  supportSettings: null,
   adminTab: "dashboard",
   admin: {},
   editingProduct: null,
+  editingCategory: null,
+  editingPaymentMethod: null,
   editingCoupon: null,
 };
 
@@ -38,11 +48,15 @@ function escapeHtml(value) {
 }
 
 function money(value) {
-  return `&#128142; ${Number(value || 0).toFixed(2)}`;
+  const currency = state.currency || { code: "USD", symbol: "$", rate_from_base: 1 };
+  const converted = Number(value || 0) * Number(currency.rate_from_base || 1);
+  return `${escapeHtml(currency.symbol)} ${converted.toFixed(2)} ${escapeHtml(currency.code)}`;
 }
 
 function textMoney(value) {
-  return `Gem ${Number(value || 0).toFixed(2)}`;
+  const currency = state.currency || { code: "USD", symbol: "$", rate_from_base: 1 };
+  const converted = Number(value || 0) * Number(currency.rate_from_base || 1);
+  return `${currency.code} ${converted.toFixed(2)}`;
 }
 
 function shortDate(value) {
@@ -93,6 +107,24 @@ function priceFor(product, duration) {
   return product.price_1_day;
 }
 
+function videoEmbed(url) {
+  if (!url) return "";
+  const safe = escapeHtml(url);
+  const match = String(url).match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([A-Za-z0-9_-]+)/);
+  if (match) {
+    return `<iframe class="video-panel" src="https://www.youtube.com/embed/${match[1]}" title="Product video" allowfullscreen></iframe>`;
+  }
+  return `<video class="video-panel" src="${safe}" controls playsinline></video>`;
+}
+
+function supportTelegramUrl(support) {
+  const username = String(support?.telegram_username || "").trim().replace(/^@/, "");
+  if (username) return `https://t.me/${encodeURIComponent(username)}`;
+  const userId = String(support?.telegram_user_id || "").trim();
+  if (userId) return `tg://user?id=${encodeURIComponent(userId)}`;
+  return "";
+}
+
 async function api(path, options = {}) {
   const headers = { Accept: "application/json", ...(options.headers || {}) };
   if (tg?.initData) headers["X-Telegram-Init-Data"] = tg.initData;
@@ -136,6 +168,9 @@ function userName(user) {
 
 async function loadDashboard() {
   state.dashboard = await api("/api/dashboard");
+  state.currency = state.dashboard.currency || state.currency || { code: "USD", symbol: "$", rate_from_base: 1 };
+  state.currencies = state.dashboard.currencies || state.currencies || [];
+  state.supportSettings = state.dashboard.support || state.supportSettings;
   state.categories = state.dashboard.categories || [];
   state.products = state.dashboard.products || [];
 }
@@ -143,8 +178,16 @@ async function loadDashboard() {
 async function loadRouteData(route = state.route) {
   if (route === "home") await loadDashboard();
   if (route === "category" && state.categoryKey) {
-    const data = await api(`/api/products?category=${encodeURIComponent(state.categoryKey)}`);
-    state.categoryProducts = data.products || [];
+    const [children, products] = await Promise.all([
+      api(`/api/categories?parent=${encodeURIComponent(state.categoryKey)}`),
+      api(`/api/products?category=${encodeURIComponent(state.categoryKey)}`),
+    ]);
+    state.categoryChildren = children.categories || [];
+    state.categoryProducts = products.products || [];
+  }
+  if (route === "checkout") {
+    const methods = await api("/api/payment-methods");
+    state.methods = methods.methods || [];
   }
   if (route === "wallet" || route === "add-balance") {
     const [methods, payments, transactions] = await Promise.all([
@@ -163,10 +206,18 @@ async function loadRouteData(route = state.route) {
   if (route === "referral") {
     state.referrals = await api("/api/referrals");
   }
+  if (route === "coupon") {
+    const data = await api("/api/products");
+    state.products = data.products || [];
+  }
+  if (route === "spin") {
+    state.spin = await api("/api/spin");
+  }
   if (route === "support") {
     const data = await api("/api/tickets");
     state.tickets = data.tickets || [];
     state.ticketMessages = data.messages || [];
+    state.supportSettings = data.support || state.supportSettings;
   }
   if (route === "admin") {
     await loadAdminData(state.adminTab);
@@ -187,14 +238,39 @@ async function openProduct(id) {
   render();
 }
 
+async function openCategory(key, name) {
+  state.categoryKey = key || null;
+  if (key) {
+    if (state.route !== "category") state.categoryStack = [];
+    const exists = state.categoryStack.find((item) => item.key === key);
+    if (!exists) state.categoryStack.push({ key, name: name || key });
+  }
+  await setRoute("category");
+}
+
+async function categoryBack() {
+  if (state.categoryStack.length > 1) {
+    state.categoryStack.pop();
+    const previous = state.categoryStack[state.categoryStack.length - 1];
+    state.categoryKey = previous.key;
+    await setRoute("category");
+  } else {
+    state.categoryStack = [];
+    state.categoryKey = null;
+    await setRoute("home");
+  }
+}
+
 async function loadAdminData(tab) {
   state.adminTab = tab;
   if (tab === "dashboard") state.admin.dashboard = await api("/api/admin/dashboard");
+  if (tab === "categories") state.admin.categories = await api("/api/admin/categories");
   if (tab === "products") state.admin.products = await api("/api/admin/products");
   if (tab === "payments") state.admin.payments = await api("/api/admin/payments");
   if (tab === "orders") state.admin.orders = await api("/api/admin/orders");
   if (tab === "users") state.admin.users = await api("/api/admin/users");
   if (tab === "tickets") state.admin.tickets = await api("/api/admin/tickets");
+  if (tab === "support") state.admin.support = await api("/api/admin/support-settings");
   if (tab === "coupons") state.admin.coupons = await api("/api/admin/coupons");
 }
 
@@ -224,7 +300,7 @@ function bottomNav() {
     ["orders", "Orders", "receipt-text"],
     ["wallet", "History", "history"],
     ["profile", "Account", "wallet-cards"],
-    ["support", "Sara", "bot"],
+    ["support", "Support", "bot"],
   ];
   return `
     <nav class="bottom-nav">
@@ -276,20 +352,15 @@ function renderHome() {
     </div>
     <section class="category-grid">
       ${state.categories.map((category) => `
-        <button class="category-card" data-action="open-category" data-key="${escapeHtml(category.key)}">
+        <button class="category-card" data-action="open-category" data-key="${escapeHtml(category.key)}" data-name="${escapeHtml(category.name)}">
           <span class="inline-icon">${icon(category.icon || "box")}</span>
           <span>
             <strong>${escapeHtml(category.name)}</strong>
-            <small>Tap to browse products</small>
+            <small>${escapeHtml(category.description || "Tap to browse products")}</small>
           </span>
         </button>
       `).join("")}
     </section>
-    <div class="section-head">
-      <h3>Latest Products</h3>
-      <button data-action="set-route" data-route="category">View all</button>
-    </div>
-    ${renderProductList(state.products)}
   `;
 }
 
@@ -315,13 +386,26 @@ function renderProductList(products) {
 }
 
 function renderCategory() {
-  const category = state.categories.find((item) => item.key === state.categoryKey);
+  const category = [...state.categories, ...state.categoryChildren, ...state.categoryStack].find((item) => item.key === state.categoryKey);
   return `
     <div class="section-head">
       <h3>${escapeHtml(category?.name || "Products")}</h3>
-      <button data-action="set-route" data-route="home">Back</button>
+      <button data-action="category-back">Back</button>
     </div>
-    ${renderProductList(state.categoryKey ? state.categoryProducts : state.products)}
+    ${state.categoryChildren.length ? `
+      <section class="category-grid">
+        ${state.categoryChildren.map((child) => `
+          <button class="category-card" data-action="open-category" data-key="${escapeHtml(child.key)}" data-name="${escapeHtml(child.name)}">
+            <span class="inline-icon">${icon(child.icon || "box")}</span>
+            <span>
+              <strong>${escapeHtml(child.name)}</strong>
+              <small>${escapeHtml(child.description || "Tap to browse products")}</small>
+            </span>
+          </button>
+        `).join("")}
+      </section>
+    ` : ""}
+    ${renderProductList(state.categoryProducts)}
   `;
 }
 
@@ -337,7 +421,10 @@ function renderProductDetail() {
         ${product.stock_status ? `<span class="badge success">In stock</span>` : `<span class="badge danger">Out of stock</span>`}
       </div>
       <h1 class="detail-title">${escapeHtml(product.name)}</h1>
+      ${product.feature_text ? `<div class="feature-box">${escapeHtml(product.feature_text)}</div>` : ""}
       <p class="description">${escapeHtml(product.description || "")}</p>
+      ${videoEmbed(product.video_url)}
+      ${product.panel_url ? `<a class="action-btn secondary" href="${escapeHtml(product.panel_url)}" target="_blank" rel="noopener">${icon("external-link")} Open Panel Link</a>` : ""}
       <form class="form-grid" id="buy-form">
         <div class="field">
           <label>Promo code</label>
@@ -357,6 +444,55 @@ function renderProductDetail() {
           <button class="action-btn" data-action="quick-buy" data-duration="${days}" type="button">${icon("shopping-cart")} Buy</button>
         </article>
       `).join("")}
+    </section>
+  `;
+}
+
+function renderCheckout() {
+  const product = state.product || state.checkout?.product;
+  const duration = state.selectedDuration;
+  if (!product) return `<div class="empty">Checkout item not found</div>`;
+  const amount = Number(priceFor(product, duration));
+  const user = state.dashboard?.user || state.session?.user || {};
+  const wallet = Number(user.wallet_balance || 0);
+  const selected = state.methods.find((method) => String(method.id) === String(state.selectedPaymentMethodId));
+  return `
+    <section class="panel">
+      <div class="status-row">
+        <h3 style="margin:0;">Select Payment Method</h3>
+        <button class="icon-btn" data-action="open-product" data-id="${product.id}" type="button">${icon("x")}</button>
+      </div>
+      <p class="muted">${escapeHtml(product.name)} - ${duration} Day</p>
+      <p class="muted">Price: <strong class="price">${money(amount)}</strong></p>
+      <button class="payment-option ${wallet >= amount ? "" : "disabled"}" data-action="wallet-pay" type="button">
+        <span class="inline-icon">${icon("wallet")}</span>
+        <span><strong>Wallet Pay</strong><small>Balance: ${money(wallet)}</small></span>
+        <span class="badge ${wallet >= amount ? "success" : "danger"}">${wallet >= amount ? "Auto" : "Insufficient"}</span>
+      </button>
+    </section>
+    <section class="panel">
+      <div class="section-head"><h3>Manual Payment</h3></div>
+      <p class="muted">Select a payment method and submit transaction ID. Admin approval will create the order automatically.</p>
+      <div class="table-lite">
+        ${state.methods.map((method) => `
+          <button class="payment-option ${String(method.id) === String(state.selectedPaymentMethodId) ? "active" : ""}" data-action="select-payment-method" data-id="${method.id}" type="button">
+            <span class="inline-icon">${icon(method.method_type === "auto" ? "badge-check" : "scan-line")}</span>
+            <span>
+              <strong>${escapeHtml(method.name)}</strong>
+              <small>${escapeHtml(method.account_label || "Details")}: ${escapeHtml(method.account_value || method.instructions || "")}</small>
+            </span>
+          </button>
+        `).join("") || `<div class="empty">No payment methods</div>`}
+      </div>
+      ${selected ? `
+        <form class="form-grid" id="checkout-payment-form" style="margin-top:12px;">
+          ${selected.qr_image_url ? `<img class="screenshot" src="${escapeHtml(selected.qr_image_url)}" alt="${escapeHtml(selected.name)} QR" />` : ""}
+          <div class="notice"><strong>${escapeHtml(selected.name)}</strong><p>${escapeHtml(selected.instructions || "")}</p></div>
+          <div class="field"><label>Transaction ID</label><input name="transaction_id" required autocomplete="off" /></div>
+          <div class="field"><label>Screenshot</label><input name="screenshot" type="file" accept="image/*" /></div>
+          <button class="action-btn" type="submit">${icon("send")} Submit Payment</button>
+        </form>
+      ` : ""}
     </section>
   `;
 }
@@ -417,7 +553,9 @@ function renderPaymentForm() {
       ${state.methods.map((method) => `
         <article class="order-card">
           <h4>${escapeHtml(method.name)}</h4>
+          <div class="muted">${escapeHtml(method.account_label || "Details")}: ${escapeHtml(method.account_value || "-")}</div>
           <div class="muted">${escapeHtml(method.instructions)}</div>
+          ${method.qr_image_url ? `<img class="screenshot" src="${escapeHtml(method.qr_image_url)}" alt="${escapeHtml(method.name)} QR" />` : ""}
         </article>
       `).join("")}
     </section>
@@ -463,6 +601,30 @@ function renderReferral() {
   `;
 }
 
+function renderSpin() {
+  const data = state.spin || {};
+  const prizes = data.prizes || [];
+  return `
+    <div class="section-head"><h3>Lucky Spin</h3><button data-action="set-route" data-route="profile">Back</button></div>
+    <section class="panel spin-panel">
+      <div class="spin-wheel">
+        ${prizes.slice(0, 8).map((prize) => `<span>${escapeHtml(prize.title)}</span>`).join("")}
+      </div>
+      <p class="muted">Daily spins left: ${data.spins_left ?? 0}</p>
+      <button class="action-btn" data-action="play-spin" type="button">${icon("rotate-cw")} Spin Now</button>
+    </section>
+    <div class="section-head"><h3>Spin History</h3></div>
+    <section class="table-lite">
+      ${(data.history || []).length ? data.history.map((row) => `
+        <article class="order-card">
+          <div class="status-row"><h4>${escapeHtml(row.prize_title)}</h4><strong class="price">${money(row.amount)}</strong></div>
+          <div class="muted">${shortDate(row.created_at)}</div>
+        </article>
+      `).join("") : `<div class="empty">No spins yet</div>`}
+    </section>
+  `;
+}
+
 function renderCouponPage() {
   return `
     <div class="section-head"><h3>Coupon</h3><button data-action="set-route" data-route="profile">Back</button></div>
@@ -491,6 +653,8 @@ function renderCouponPage() {
 }
 
 function renderSupport() {
+  const support = state.supportSettings || {};
+  const supportUrl = supportTelegramUrl(support);
   const messagesByTicket = new Map();
   state.ticketMessages.forEach((message) => {
     const list = messagesByTicket.get(message.ticket_id) || [];
@@ -498,6 +662,18 @@ function renderSupport() {
     messagesByTicket.set(message.ticket_id, list);
   });
   return `
+    <div class="section-head"><h3>Telegram Support</h3></div>
+    <section class="panel support-card">
+      <div class="support-icon">${icon("headphones")}</div>
+      <div>
+        <h3>${escapeHtml(support.display_name || "Store Support")}</h3>
+        <p>${escapeHtml(support.note || "Tap to open Telegram inbox for help.")}</p>
+        <small>${support.telegram_username ? `@${escapeHtml(support.telegram_username)}` : support.telegram_user_id ? `ID ${escapeHtml(support.telegram_user_id)}` : "Support contact not set"}</small>
+      </div>
+      <button class="action-btn ${support.enabled && supportUrl ? "" : "secondary"}" data-action="open-support-chat" data-url="${escapeHtml(support.enabled ? supportUrl : "")}" type="button">
+        ${icon("send")} Open Inbox
+      </button>
+    </section>
     <div class="section-head"><h3>Support Ticket</h3></div>
     <form class="panel form-grid" id="ticket-form">
       <div class="field">
@@ -547,7 +723,21 @@ function renderProfile() {
         <div class="metric"><span>User ID</span><strong>${escapeHtml(user.telegram_id)}</strong></div>
         <div class="metric"><span>Join date</span><strong style="font-size:15px;">${shortDate(user.joined_at)}</strong></div>
       </div>
+      <form class="form-grid" id="currency-form">
+        <div class="field">
+          <label>Preferred Currency</label>
+          <select name="code">
+            ${state.currencies.map((currency) => `
+              <option value="${escapeHtml(currency.code)}" ${currency.code === state.currency?.code ? "selected" : ""}>
+                ${escapeHtml(currency.symbol)} ${escapeHtml(currency.code)} - ${escapeHtml(currency.name)}
+              </option>
+            `).join("")}
+          </select>
+        </div>
+        <button class="action-btn secondary" type="submit">${icon("coins")} Save Currency</button>
+      </form>
       <div class="form-grid">
+        <button class="action-btn secondary" data-action="set-route" data-route="spin">${icon("rotate-cw")} Lucky Spin</button>
         <button class="action-btn secondary" data-action="set-route" data-route="referral">${icon("share-2")} Referral</button>
         <button class="action-btn secondary" data-action="set-route" data-route="coupon">${icon("badge-percent")} Coupon</button>
         ${state.session?.is_admin ? `<button class="action-btn" data-action="set-route" data-route="admin">${icon("shield-check")} Admin Panel</button>` : ""}
@@ -559,12 +749,14 @@ function renderProfile() {
 function adminTabs() {
   const tabs = [
     ["dashboard", "Dashboard"],
+    ["categories", "Sections"],
     ["products", "Products"],
     ["orders", "Orders"],
     ["payments", "Payments"],
     ["users", "Users"],
     ["coupons", "Coupons"],
     ["tickets", "Tickets"],
+    ["support", "Supporter"],
     ["broadcast", "Broadcast"],
   ];
   return `
@@ -584,12 +776,14 @@ function renderAdmin() {
 
 function renderAdminTab() {
   if (state.adminTab === "dashboard") return renderAdminDashboard();
+  if (state.adminTab === "categories") return renderAdminCategories();
   if (state.adminTab === "products") return renderAdminProducts();
   if (state.adminTab === "orders") return renderAdminOrders();
   if (state.adminTab === "payments") return renderAdminPayments();
   if (state.adminTab === "users") return renderAdminUsers();
   if (state.adminTab === "coupons") return renderAdminCoupons();
   if (state.adminTab === "tickets") return renderAdminTickets();
+  if (state.adminTab === "support") return renderAdminSupport();
   if (state.adminTab === "broadcast") return renderAdminBroadcast();
   return "";
 }
@@ -618,6 +812,45 @@ function renderAdminDashboard() {
   `;
 }
 
+function renderAdminCategories() {
+  const categories = state.admin.categories?.categories || [];
+  const edit = state.editingCategory;
+  return `
+    <form class="panel form-grid" id="admin-category-form">
+      <div class="two-col">
+        <div class="field"><label>Section key</label><input name="key" required value="${escapeHtml(edit?.key || "")}" ${edit ? "readonly" : ""} /></div>
+        <div class="field"><label>Icon</label><input name="icon" value="${escapeHtml(edit?.icon || "box")}" /></div>
+      </div>
+      <div class="field"><label>Section name</label><input name="name" required value="${escapeHtml(edit?.name || "")}" /></div>
+      <div class="field"><label>Description</label><input name="description" value="${escapeHtml(edit?.description || "")}" /></div>
+      <div class="two-col">
+        <div class="field">
+          <label>Parent section</label>
+          <select name="parent_key">
+            <option value="">Top level</option>
+            ${categories.filter((cat) => cat.key !== edit?.key).map((cat) => `<option value="${escapeHtml(cat.key)}" ${edit?.parent_key === cat.key ? "selected" : ""}>${escapeHtml(cat.name)}</option>`).join("")}
+          </select>
+        </div>
+        <div class="field"><label>Sort</label><input name="sort_order" type="number" value="${escapeHtml(edit?.sort_order ?? 0)}" /></div>
+      </div>
+      <button class="action-btn" type="submit">${icon(edit ? "save" : "plus")} ${edit ? "Save Section" : "Add Section"}</button>
+      ${edit ? `<button class="action-btn secondary" data-action="cancel-category-edit" type="button">Cancel Edit</button>` : ""}
+    </form>
+    <section class="table-lite" style="margin-top:10px;">
+      ${categories.map((category) => `
+        <article class="admin-row">
+          <div class="status-row"><h4>${escapeHtml(category.name)}</h4>${category.active ? `<span class="badge success">Active</span>` : `<span class="badge danger">Off</span>`}</div>
+          <div class="muted">Key: ${escapeHtml(category.key)} ${category.parent_name ? `- Parent: ${escapeHtml(category.parent_name)}` : "- Top level"}</div>
+          <div class="two-col">
+            <button class="action-btn secondary" data-action="edit-category" data-key="${escapeHtml(category.key)}" type="button">${icon("pencil")} Edit</button>
+            <button class="action-btn danger" data-action="delete-category" data-key="${escapeHtml(category.key)}" type="button">${icon("trash-2")} Delete</button>
+          </div>
+        </article>
+      `).join("") || `<div class="empty">No sections</div>`}
+    </section>
+  `;
+}
+
 function renderAdminProducts() {
   const data = state.admin.products || {};
   const products = data.products || [];
@@ -638,8 +871,11 @@ function renderAdminProducts() {
         </div>
       </div>
       <div class="field"><label>Product name</label><input name="name" required value="${escapeHtml(edit?.name || "")}" /></div>
+      <div class="field"><label>Features panel text</label><textarea name="feature_text">${escapeHtml(edit?.feature_text || "")}</textarea></div>
       <div class="field"><label>Description</label><textarea name="description">${escapeHtml(edit?.description || "")}</textarea></div>
       <div class="field"><label>Product image URL</label><input name="image_url" value="${escapeHtml(edit?.image_url || "")}" /></div>
+      <div class="field"><label>Video URL / YouTube URL</label><input name="video_url" value="${escapeHtml(edit?.video_url || "")}" /></div>
+      <div class="field"><label>Panel file/link URL</label><input name="panel_url" value="${escapeHtml(edit?.panel_url || "")}" /></div>
       <div class="field"><label>Product image upload</label><input name="image_file" type="file" accept="image/*" /></div>
       <div class="two-col">
         <div class="field"><label>1 Day price</label><input name="price_1_day" type="number" step="0.01" min="0" required value="${escapeHtml(edit?.price_1_day ?? "")}" /></div>
@@ -690,7 +926,41 @@ function renderAdminOrders() {
 
 function renderAdminPayments() {
   const payments = state.admin.payments?.payments || [];
+  const methods = state.admin.payments?.methods || [];
+  const edit = state.editingPaymentMethod;
   return `
+    <form class="panel form-grid" id="admin-payment-method-form">
+      <div class="two-col">
+        <div class="field"><label>Method name</label><input name="name" required value="${escapeHtml(edit?.name || "")}" /></div>
+        <div class="field"><label>Type</label><select name="method_type"><option value="manual" ${edit?.method_type !== "auto" ? "selected" : ""}>Manual</option><option value="auto" ${edit?.method_type === "auto" ? "selected" : ""}>Auto</option></select></div>
+      </div>
+      <div class="two-col">
+        <div class="field"><label>Label</label><input name="account_label" value="${escapeHtml(edit?.account_label || "")}" /></div>
+        <div class="field"><label>Value</label><input name="account_value" value="${escapeHtml(edit?.account_value || "")}" /></div>
+      </div>
+      <div class="field"><label>Instructions</label><textarea name="instructions">${escapeHtml(edit?.instructions || "")}</textarea></div>
+      <div class="field"><label>QR image URL</label><input name="qr_image_url" value="${escapeHtml(edit?.qr_image_url || "")}" /></div>
+      <div class="two-col">
+        <div class="field"><label>Sort</label><input name="sort_order" type="number" value="${escapeHtml(edit?.sort_order ?? 0)}" /></div>
+        <div class="field"><label>Status</label><select name="active"><option value="true" ${edit?.active !== false ? "selected" : ""}>Active</option><option value="false" ${edit?.active === false ? "selected" : ""}>Inactive</option></select></div>
+      </div>
+      <button class="action-btn" type="submit">${icon(edit ? "save" : "plus")} ${edit ? "Save Method" : "Add Method"}</button>
+      ${edit ? `<button class="action-btn secondary" data-action="cancel-payment-method-edit" type="button">Cancel Edit</button>` : ""}
+    </form>
+    <div class="section-head"><h3>Payment Methods</h3></div>
+    <section class="table-lite">
+      ${methods.map((method) => `
+        <article class="admin-row">
+          <div class="status-row"><h4>${escapeHtml(method.name)}</h4>${method.active ? `<span class="badge success">Active</span>` : `<span class="badge danger">Off</span>`}</div>
+          <div class="muted">${escapeHtml(method.account_label || "Details")}: ${escapeHtml(method.account_value || "-")}</div>
+          <div class="two-col">
+            <button class="action-btn secondary" data-action="edit-payment-method" data-id="${method.id}" type="button">${icon("pencil")} Edit</button>
+            <button class="action-btn danger" data-action="delete-payment-method" data-id="${method.id}" type="button">${icon("trash-2")} Delete</button>
+          </div>
+        </article>
+      `).join("") || `<div class="empty">No methods</div>`}
+    </section>
+    <div class="section-head"><h3>Payment Requests</h3></div>
     <section class="table-lite">
       ${payments.map((payment) => `
         <article class="admin-row">
@@ -766,6 +1036,38 @@ function renderAdminCoupons() {
   `;
 }
 
+function renderAdminSupport() {
+  const support = state.admin.support?.support || {};
+  return `
+    <form class="panel form-grid" id="admin-support-settings-form">
+      <div class="field">
+        <label>Support display name</label>
+        <input name="display_name" required value="${escapeHtml(support.display_name || "Store Support")}" />
+      </div>
+      <div class="field">
+        <label>Telegram username</label>
+        <input name="telegram_username" placeholder="support_username" value="${escapeHtml(support.telegram_username || "")}" />
+      </div>
+      <div class="field">
+        <label>Telegram numeric user ID</label>
+        <input name="telegram_user_id" inputmode="numeric" value="${escapeHtml(support.telegram_user_id || "")}" />
+      </div>
+      <div class="field">
+        <label>Support note</label>
+        <textarea name="note">${escapeHtml(support.note || "Tap to open Telegram inbox for help.")}</textarea>
+      </div>
+      <div class="field">
+        <label>Status</label>
+        <select name="enabled">
+          <option value="true" ${support.enabled !== false ? "selected" : ""}>Active</option>
+          <option value="false" ${support.enabled === false ? "selected" : ""}>Inactive</option>
+        </select>
+      </div>
+      <button class="action-btn" type="submit">${icon("save")} Save Supporter</button>
+    </form>
+  `;
+}
+
 function renderAdminTickets() {
   const data = state.admin.tickets || {};
   const messagesByTicket = new Map();
@@ -809,9 +1111,11 @@ function renderView() {
   if (state.route === "home") return renderHome();
   if (state.route === "category") return renderCategory();
   if (state.route === "product") return renderProductDetail();
+  if (state.route === "checkout") return renderCheckout();
   if (state.route === "wallet" || state.route === "add-balance") return renderWallet();
   if (state.route === "orders") return renderOrders();
   if (state.route === "referral") return renderReferral();
+  if (state.route === "spin") return renderSpin();
   if (state.route === "coupon") return renderCouponPage();
   if (state.route === "support") return renderSupport();
   if (state.route === "profile") return renderProfile();
@@ -837,9 +1141,9 @@ function syncTelegramControls() {
       mainButtonBound = true;
     }
     if (state.route === "product" && state.product?.stock_status) {
-      tg.MainButton.setText(`Buy ${textMoney(priceFor(state.product, state.selectedDuration))}`);
+      tg.MainButton.setText(`Checkout ${textMoney(priceFor(state.product, state.selectedDuration))}`);
       tg.MainButton.show();
-      mainButtonHandler = () => submitOrder();
+      mainButtonHandler = () => openCheckout();
     } else {
       tg.MainButton.hide();
       mainButtonHandler = null;
@@ -865,9 +1169,19 @@ function renderError(error) {
   `;
 }
 
+async function openCheckout() {
+  if (!state.product) return;
+  const coupon = document.querySelector("#buy-form [name='coupon_code']")?.value || "";
+  state.checkout = { product: state.product, duration: state.selectedDuration, coupon_code: coupon };
+  state.route = "checkout";
+  state.selectedPaymentMethodId = null;
+  await loadRouteData("checkout");
+  render();
+}
+
 async function submitOrder(form) {
   const couponInput = form?.elements?.coupon_code || document.querySelector("#buy-form [name='coupon_code']");
-  const couponCode = couponInput?.value?.trim() || "";
+  const couponCode = couponInput?.value?.trim() || state.checkout?.coupon_code || "";
   if (!state.product) return;
   const ok = tg?.showConfirm
     ? await new Promise((resolve) => tg.showConfirm("Place this order?", resolve))
@@ -895,8 +1209,10 @@ document.addEventListener("click", async (event) => {
       await setRoute(button.dataset.route);
     }
     if (action === "open-category") {
-      state.categoryKey = button.dataset.key || null;
-      await setRoute("category");
+      await openCategory(button.dataset.key, button.dataset.name);
+    }
+    if (action === "category-back") {
+      await categoryBack();
     }
     if (action === "open-product") {
       await openProduct(button.dataset.id);
@@ -907,14 +1223,59 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "quick-buy") {
       state.selectedDuration = Number(button.dataset.duration);
-      await submitOrder();
+      await openCheckout();
+    }
+    if (action === "wallet-pay") {
+      if (button.classList.contains("disabled")) {
+        toast("Insufficient wallet balance");
+      } else {
+        await submitOrder();
+      }
+    }
+    if (action === "select-payment-method") {
+      state.selectedPaymentMethodId = Number(button.dataset.id);
+      render();
+    }
+    if (action === "play-spin") {
+      const result = await api("/api/spin/play", { method: "POST" });
+      toast(`${result.prize.title}: ${money(result.prize.amount)}`);
+      await loadDashboard();
+      await loadRouteData("spin");
+      render();
     }
     if (action === "copy-referral") {
       await navigator.clipboard.writeText(state.referrals?.referral_link || state.referrals?.referral_code || "");
       toast("Referral link copied");
     }
+    if (action === "open-support-chat") {
+      const url = button.dataset.url || "";
+      if (!url) {
+        toast("Support contact not set");
+        return;
+      }
+      if (url.startsWith("https://t.me/") && tg?.openTelegramLink) {
+        tg.openTelegramLink(url);
+      } else {
+        window.location.href = url;
+      }
+    }
     if (action === "admin-tab") {
       await loadAdminData(button.dataset.tab);
+      render();
+    }
+    if (action === "cancel-category-edit") {
+      state.editingCategory = null;
+      render();
+    }
+    if (action === "edit-category") {
+      const list = state.admin.categories?.categories || [];
+      state.editingCategory = list.find((item) => String(item.key) === String(button.dataset.key));
+      render();
+    }
+    if (action === "delete-category") {
+      await api(`/api/admin/categories/${encodeURIComponent(button.dataset.key)}`, { method: "DELETE" });
+      toast("Section deleted");
+      await loadAdminData("categories");
       render();
     }
     if (action === "cancel-product-edit") {
@@ -942,6 +1303,21 @@ document.addEventListener("click", async (event) => {
       const reason = window.prompt("Reject reason") || "Rejected by admin";
       await api(`/api/admin/payments/${button.dataset.id}/reject`, { method: "POST", body: { reason } });
       toast("Payment rejected");
+      await loadAdminData("payments");
+      render();
+    }
+    if (action === "edit-payment-method") {
+      const list = state.admin.payments?.methods || [];
+      state.editingPaymentMethod = list.find((item) => String(item.id) === String(button.dataset.id));
+      render();
+    }
+    if (action === "cancel-payment-method-edit") {
+      state.editingPaymentMethod = null;
+      render();
+    }
+    if (action === "delete-payment-method") {
+      await api(`/api/admin/payment-methods/${button.dataset.id}`, { method: "DELETE" });
+      toast("Payment method deleted");
       await loadAdminData("payments");
       render();
     }
@@ -1023,6 +1399,39 @@ document.addEventListener("submit", async (event) => {
       toast("Payment submitted");
       await setRoute("wallet");
     }
+    if (form.id === "currency-form") {
+      event.preventDefault();
+      const data = new FormData(form);
+      const result = await api("/api/profile/currency", {
+        method: "POST",
+        body: { code: data.get("code") },
+      });
+      state.currency = result.currency;
+      state.session.user = result.user;
+      await loadDashboard();
+      toast("Currency updated");
+      render();
+    }
+    if (form.id === "checkout-payment-form") {
+      event.preventDefault();
+      const data = new FormData(form);
+      const screenshot = await fileToDataUrl(data.get("screenshot"));
+      const product = state.product || state.checkout?.product;
+      await api("/api/payments", {
+        method: "POST",
+        body: {
+          amount: Number(priceFor(product, state.selectedDuration)),
+          method_id: Number(state.selectedPaymentMethodId),
+          transaction_id: data.get("transaction_id"),
+          screenshot_data: screenshot || null,
+          product_id: product.id,
+          duration_days: state.selectedDuration,
+          coupon_code: state.checkout?.coupon_code || null,
+        },
+      });
+      toast("Payment submitted. Order will be created after approval.");
+      await setRoute("orders");
+    }
     if (form.id === "ticket-form") {
       event.preventDefault();
       const data = new FormData(form);
@@ -1064,6 +1473,9 @@ document.addEventListener("submit", async (event) => {
         category_key: data.get("category_key"),
         name: data.get("name"),
         description: data.get("description"),
+        feature_text: data.get("feature_text"),
+        video_url: data.get("video_url") || "",
+        panel_url: data.get("panel_url") || "",
         image_url: imageFromFile || data.get("image_url") || "",
         price_1_day: Number(data.get("price_1_day")),
         price_7_days: Number(data.get("price_7_days")),
@@ -1077,6 +1489,46 @@ document.addEventListener("submit", async (event) => {
       state.editingProduct = null;
       toast("Product saved");
       await loadAdminData("products");
+      render();
+    }
+    if (form.id === "admin-category-form") {
+      event.preventDefault();
+      const data = new FormData(form);
+      const rawKey = String(data.get("key") || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      const payload = {
+        key: rawKey,
+        name: data.get("name"),
+        icon: data.get("icon") || "box",
+        description: data.get("description") || "",
+        parent_key: data.get("parent_key") || null,
+        sort_order: Number(data.get("sort_order") || 0),
+        active: true,
+      };
+      const path = state.editingCategory ? `/api/admin/categories/${encodeURIComponent(state.editingCategory.key)}` : "/api/admin/categories";
+      await api(path, { method: state.editingCategory ? "PUT" : "POST", body: payload });
+      state.editingCategory = null;
+      toast("Section saved");
+      await loadAdminData("categories");
+      render();
+    }
+    if (form.id === "admin-payment-method-form") {
+      event.preventDefault();
+      const data = new FormData(form);
+      const payload = {
+        name: data.get("name"),
+        instructions: data.get("instructions") || "",
+        method_type: data.get("method_type"),
+        account_label: data.get("account_label") || "",
+        account_value: data.get("account_value") || "",
+        qr_image_url: data.get("qr_image_url") || "",
+        active: data.get("active") === "true",
+        sort_order: Number(data.get("sort_order") || 0),
+      };
+      const path = state.editingPaymentMethod ? `/api/admin/payment-methods/${state.editingPaymentMethod.id}` : "/api/admin/payment-methods";
+      await api(path, { method: state.editingPaymentMethod ? "PUT" : "POST", body: payload });
+      state.editingPaymentMethod = null;
+      toast("Payment method saved");
+      await loadAdminData("payments");
       render();
     }
     if (form.id === "admin-user-search-form") {
@@ -1102,6 +1554,24 @@ document.addEventListener("submit", async (event) => {
       state.editingCoupon = null;
       toast("Coupon saved");
       await loadAdminData("coupons");
+      render();
+    }
+    if (form.id === "admin-support-settings-form") {
+      event.preventDefault();
+      const data = new FormData(form);
+      const result = await api("/api/admin/support-settings", {
+        method: "POST",
+        body: {
+          display_name: data.get("display_name"),
+          telegram_username: data.get("telegram_username") || "",
+          telegram_user_id: data.get("telegram_user_id") || "",
+          note: data.get("note") || "",
+          enabled: data.get("enabled") === "true",
+        },
+      });
+      state.admin.support = result;
+      state.supportSettings = result.support;
+      toast("Supporter saved");
       render();
     }
     if (form.classList.contains("admin-ticket-reply-form")) {

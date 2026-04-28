@@ -8,15 +8,19 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 - User profile sync: Telegram ID, name, username, photo, join date
 - Home dashboard: wallet, orders, subscriptions, notices, categories, products
 - Product categories: Android, iPhone, PC, Root Device, Premium Tools, Subscription Plans
-- Product details: image, name, description, stock, 1/7/30 day prices, coupon, buy
+- Nested sections/sub-sections controlled from admin
+- Product details: image, name, feature panel, video/YouTube embed, panel link, stock, 1/7/30 day prices, coupon, buy
 - Wallet: add balance request, payment method, transaction ID, screenshot upload
-- Admin payment approval: approved deposits update wallet ledger
+- Checkout payment flow: Wallet Pay auto-deducts; manual payment approval can auto-create the order
+- Admin payment method editor: name, instructions, account details, QR image, active/off
 - Orders: invoice ID, pending, approved, delivered, cancelled, refund on cancel
 - Referral link and bonus wallet credit for new user joins
 - Coupons: percent or fixed discount, expiry, max usage
-- Support tickets with admin replies
+- Lucky spin with daily spin and wallet bonus rewards
+- Multi-currency selector in profile: AED, BDT, EUR, GBP, IDR, INR, MYR, NPR, PHP, PKR, RUB, SAR, THB, TRY, USD
+- Support page with admin-configurable Telegram inbox button and support tickets with admin replies
 - Telegram notifications for payments, orders, delivery, support
-- Admin dashboard, products, orders, payments, users, coupons, tickets, broadcast
+- Admin dashboard, products, orders, payments, users, coupons, supporter settings, tickets, broadcast
 
 ## Deploy To Neon And Render
 

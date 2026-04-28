@@ -8,25 +8,51 @@ create table if not exists users (
     joined_at timestamptz not null default now(),
     last_seen_at timestamptz,
     wallet_balance numeric(12,2) not null default 0,
+    selected_currency text not null default 'USD',
     is_admin boolean not null default false,
     is_banned boolean not null default false,
     referral_code text not null unique,
     referred_by_user_id bigint references users(id)
 );
 
+alter table users add column if not exists selected_currency text not null default 'USD';
+
+create table if not exists currencies (
+    code text primary key,
+    symbol text not null,
+    name text not null,
+    rate_from_base numeric(18,6) not null default 1,
+    active boolean not null default true,
+    sort_order int not null default 0
+);
+
+create table if not exists app_settings (
+    key text primary key,
+    value text not null default '',
+    updated_at timestamptz not null default now()
+);
+
 create table if not exists categories (
     key text primary key,
     name text not null,
     icon text not null default '',
+    description text not null default '',
+    parent_key text references categories(key) on delete set null,
     sort_order int not null default 0,
     active boolean not null default true
 );
+
+alter table categories add column if not exists description text not null default '';
+alter table categories add column if not exists parent_key text references categories(key) on delete set null;
 
 create table if not exists products (
     id bigserial primary key,
     category_key text not null references categories(key),
     name text not null,
     description text not null default '',
+    feature_text text not null default '',
+    video_url text not null default '',
+    panel_url text not null default '',
     image_url text not null default '',
     price_1_day numeric(12,2) not null default 0,
     price_7_days numeric(12,2) not null default 0,
@@ -38,13 +64,26 @@ create table if not exists products (
     updated_at timestamptz not null default now()
 );
 
+alter table products add column if not exists feature_text text not null default '';
+alter table products add column if not exists video_url text not null default '';
+alter table products add column if not exists panel_url text not null default '';
+
 create table if not exists payment_methods (
     id bigserial primary key,
     name text not null unique,
     instructions text not null default '',
+    method_type text not null default 'manual',
+    account_label text not null default '',
+    account_value text not null default '',
+    qr_image_url text not null default '',
     active boolean not null default true,
     sort_order int not null default 0
 );
+
+alter table payment_methods add column if not exists method_type text not null default 'manual';
+alter table payment_methods add column if not exists account_label text not null default '';
+alter table payment_methods add column if not exists account_value text not null default '';
+alter table payment_methods add column if not exists qr_image_url text not null default '';
 
 create table if not exists payment_requests (
     id bigserial primary key,
@@ -54,12 +93,21 @@ create table if not exists payment_requests (
     method_name text not null,
     transaction_id text not null,
     screenshot_data text,
+    checkout_product_id bigint references products(id) on delete set null,
+    checkout_duration_days int check (checkout_duration_days in (1, 7, 30)),
+    checkout_coupon_code text,
+    auto_order_id bigint,
     status text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
     rejection_reason text,
     reviewed_by bigint references users(id),
     reviewed_at timestamptz,
     created_at timestamptz not null default now()
 );
+
+alter table payment_requests add column if not exists checkout_product_id bigint references products(id) on delete set null;
+alter table payment_requests add column if not exists checkout_duration_days int check (checkout_duration_days in (1, 7, 30));
+alter table payment_requests add column if not exists checkout_coupon_code text;
+alter table payment_requests add column if not exists auto_order_id bigint;
 
 create table if not exists wallet_transactions (
     id bigserial primary key,
@@ -152,31 +200,91 @@ create table if not exists notices (
     created_at timestamptz not null default now()
 );
 
+create table if not exists spin_prizes (
+    id bigserial primary key,
+    title text not null,
+    amount numeric(12,2) not null default 0,
+    weight int not null default 1,
+    active boolean not null default true,
+    sort_order int not null default 0,
+    created_at timestamptz not null default now()
+);
+
+create table if not exists spin_history (
+    id bigserial primary key,
+    user_id bigint not null references users(id) on delete cascade,
+    prize_id bigint references spin_prizes(id) on delete set null,
+    prize_title text not null,
+    amount numeric(12,2) not null default 0,
+    created_at timestamptz not null default now()
+);
+
+create index if not exists idx_categories_parent on categories(parent_key, sort_order);
 create index if not exists idx_products_category on products(category_key);
 create index if not exists idx_orders_user on orders(user_id, created_at desc);
 create index if not exists idx_payment_requests_status on payment_requests(status, created_at desc);
 create index if not exists idx_wallet_transactions_user on wallet_transactions(user_id, created_at desc);
 create index if not exists idx_support_tickets_user on support_tickets(user_id, updated_at desc);
 
-insert into categories (key, name, icon, sort_order) values
-    ('android', 'Android', 'smartphone', 10),
-    ('iphone', 'iPhone', 'apple', 20),
-    ('pc', 'PC', 'monitor', 30),
-    ('root-device', 'Root Device', 'shield', 40),
-    ('premium-tools', 'Premium Tools', 'sparkles', 50),
-    ('subscriptions', 'Subscription Plans', 'calendar', 60)
+insert into categories (key, name, icon, description, parent_key, sort_order) values
+    ('devices', 'Devices', 'home', 'Browse device sections', null, 10),
+    ('android', 'Android (non root)', 'smartphone', 'Android panels and tools', 'devices', 10),
+    ('iphone', 'iPhone', 'smartphone', 'iOS tools and subscriptions', 'devices', 20),
+    ('pc', 'PC', 'monitor', 'PC tools and panels', 'devices', 30),
+    ('root-device', 'Root Device Android', 'shield', 'Root device Android panels', 'devices', 40),
+    ('premium-tools', 'Premium Tools', 'sparkles', 'Premium tools and utilities', null, 50),
+    ('subscriptions', 'Subscription Plans', 'calendar', 'Subscription packages', null, 60)
 on conflict (key) do update set
     name = excluded.name,
     icon = excluded.icon,
+    description = excluded.description,
+    parent_key = excluded.parent_key,
     sort_order = excluded.sort_order,
     active = true;
 
-insert into payment_methods (name, instructions, sort_order) values
-    ('bKash', 'Send money to your bKash merchant/personal number, then submit transaction ID and screenshot.', 10),
-    ('Nagad', 'Send money to your Nagad number, then submit transaction ID and screenshot.', 20),
-    ('Rocket', 'Send money to your Rocket number, then submit transaction ID and screenshot.', 30),
-    ('USDT', 'Send USDT to your wallet address, then submit transaction hash and screenshot.', 40)
-on conflict do nothing;
+insert into currencies (code, symbol, name, rate_from_base, sort_order) values
+    ('AED', 'AED', 'UAE Dirham', 3.672500, 10),
+    ('BDT', '৳', 'Bangladeshi Taka', 117.000000, 20),
+    ('EUR', '€', 'Euro', 0.920000, 30),
+    ('GBP', '£', 'British Pound', 0.790000, 40),
+    ('IDR', 'Rp', 'Indonesian Rupiah', 16200.000000, 50),
+    ('INR', '₹', 'Indian Rupee', 83.500000, 60),
+    ('MYR', 'RM', 'Malaysian Ringgit', 4.700000, 70),
+    ('NPR', 'रू', 'Nepalese Rupee', 133.600000, 80),
+    ('PHP', '₱', 'Philippine Peso', 57.500000, 90),
+    ('PKR', 'Rs', 'Pakistani Rupee', 278.000000, 100),
+    ('RUB', '₽', 'Russian Ruble', 92.000000, 110),
+    ('SAR', 'SAR', 'Saudi Riyal ر.س', 3.750000, 120),
+    ('THB', '฿', 'Thai Baht', 36.700000, 130),
+    ('TRY', '₺', 'Turkish Lira', 32.300000, 140),
+    ('USD', '$', 'US Dollar', 1.000000, 150)
+on conflict (code) do update set
+    symbol = excluded.symbol,
+    name = excluded.name,
+    rate_from_base = excluded.rate_from_base,
+    sort_order = excluded.sort_order,
+    active = true;
+
+insert into app_settings (key, value) values
+    ('support_display_name', 'Store Support'),
+    ('support_telegram_username', ''),
+    ('support_telegram_user_id', ''),
+    ('support_note', 'Tap to open Telegram inbox for help.'),
+    ('support_enabled', 'true')
+on conflict (key) do nothing;
+
+insert into payment_methods (name, instructions, method_type, account_label, account_value, sort_order)
+select 'bKash', 'Send money, then submit transaction ID and screenshot.', 'manual', 'Number', '01316743068', 10
+where not exists (select 1 from payment_methods where name = 'bKash');
+insert into payment_methods (name, instructions, method_type, account_label, account_value, sort_order)
+select 'Nagad', 'Send money, then submit transaction ID and screenshot.', 'manual', 'Number', '01700000000', 20
+where not exists (select 1 from payment_methods where name = 'Nagad');
+insert into payment_methods (name, instructions, method_type, account_label, account_value, sort_order)
+select 'Rocket', 'Send money, then submit transaction ID and screenshot.', 'manual', 'Number', '01800000000', 30
+where not exists (select 1 from payment_methods where name = 'Rocket');
+insert into payment_methods (name, instructions, method_type, account_label, account_value, sort_order)
+select 'USDT', 'Send USDT, then submit transaction hash and screenshot.', 'manual', 'TRC20 Address', 'TM1FVE5T2zvRQG...', 40
+where not exists (select 1 from payment_methods where name = 'USDT');
 
 insert into coupons (code, discount_type, discount_value, active, max_uses) values
     ('WELCOME10', 'percent', 10, true, 500)
@@ -185,3 +293,14 @@ on conflict (code) do nothing;
 insert into notices (title, body, active, starts_at)
 select 'Welcome', 'Add balance, apply coupons, and place orders directly from Telegram.', true, now()
 where not exists (select 1 from notices where title = 'Welcome' and body like 'Add balance%');
+
+insert into spin_prizes (title, amount, weight, sort_order)
+select 'Try Again', 0, 50, 10 where not exists (select 1 from spin_prizes where title = 'Try Again');
+insert into spin_prizes (title, amount, weight, sort_order)
+select 'Small Bonus', 2, 25, 20 where not exists (select 1 from spin_prizes where title = 'Small Bonus');
+insert into spin_prizes (title, amount, weight, sort_order)
+select 'Wallet Bonus', 5, 15, 30 where not exists (select 1 from spin_prizes where title = 'Wallet Bonus');
+insert into spin_prizes (title, amount, weight, sort_order)
+select 'Lucky Reward', 10, 8, 40 where not exists (select 1 from spin_prizes where title = 'Lucky Reward');
+insert into spin_prizes (title, amount, weight, sort_order)
+select 'Mega Reward', 25, 2, 50 where not exists (select 1 from spin_prizes where title = 'Mega Reward');
