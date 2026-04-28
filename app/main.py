@@ -269,6 +269,31 @@ async def run_schema() -> None:
         await conn.execute(schema_path.read_text(encoding="utf-8"))
 
 
+async def ensure_spin_runtime_schema(conn: asyncpg.Connection) -> None:
+    await conn.execute("alter table users add column if not exists next_spin_at timestamptz")
+
+
+async def ensure_product_keys_runtime_schema(conn: asyncpg.Connection) -> None:
+    await conn.execute(
+        """
+        create table if not exists product_keys (
+            id bigserial primary key,
+            product_id bigint not null references products(id) on delete cascade,
+            key_value text not null,
+            status text not null default 'available' check (status in ('available', 'delivered')),
+            assigned_order_id bigint references orders(id) on delete set null,
+            assigned_user_id bigint references users(id) on delete set null,
+            uploaded_by bigint references users(id) on delete set null,
+            created_at timestamptz not null default now(),
+            delivered_at timestamptz
+        )
+        """
+    )
+    await conn.execute(
+        "create index if not exists idx_product_keys_product_status on product_keys(product_id, status, created_at)"
+    )
+
+
 async def upsert_telegram_user(
     conn: asyncpg.Connection,
     tg_user: dict[str, Any],
@@ -427,6 +452,7 @@ async def auto_deliver_order_key_locked(
     conn: asyncpg.Connection,
     order_id: int,
 ) -> tuple[asyncpg.Record, asyncpg.Record | None]:
+    await ensure_product_keys_runtime_schema(conn)
     order = await conn.fetchrow(
         "select * from orders where id = $1 for update",
         order_id,
@@ -1030,6 +1056,7 @@ async def referrals(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
 @app.get("/api/spin")
 async def spin_info(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dict[str, Any]:
     async with connection() as conn:
+        await ensure_spin_runtime_schema(conn)
         prizes = await conn.fetch(
             "select * from spin_prizes where active = true order by sort_order, amount"
         )
@@ -1063,6 +1090,7 @@ async def spin_info(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
 @app.post("/api/spin/play")
 async def spin_play(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dict[str, Any]:
     async with connection() as conn:
+        await ensure_spin_runtime_schema(conn)
         async with conn.transaction():
             locked_user = await conn.fetchrow(
                 """
@@ -1277,6 +1305,7 @@ async def admin_product_keys(
     product_id: int | None = None,
 ) -> dict[str, Any]:
     async with connection() as conn:
+        await ensure_product_keys_runtime_schema(conn)
         products = await conn.fetch(
             """
             select p.id, p.name, c.name as category_name,
@@ -1323,6 +1352,7 @@ async def admin_upload_product_keys(
         raise HTTPException(status_code=400, detail="Upload up to 1000 keys at a time.")
 
     async with connection() as conn:
+        await ensure_product_keys_runtime_schema(conn)
         product = await conn.fetchrow("select id from products where id = $1", data.product_id)
         if not product:
             raise HTTPException(status_code=404, detail="Product not found.")
@@ -1345,6 +1375,7 @@ async def admin_delete_product_key(
     admin: Annotated[asyncpg.Record, Depends(admin_user)],
 ) -> dict[str, str]:
     async with connection() as conn:
+        await ensure_product_keys_runtime_schema(conn)
         result = await conn.execute("delete from product_keys where id = $1", key_id)
     if result.endswith("0"):
         raise HTTPException(status_code=404, detail="Key not found.")

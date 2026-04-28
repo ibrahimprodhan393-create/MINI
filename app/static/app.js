@@ -135,9 +135,18 @@ async function api(path, options = {}) {
   }
   const response = await fetch(path, { ...options, headers });
   const contentType = response.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json") ? await response.json() : {};
+  let payload = {};
+  if (contentType.includes("application/json")) {
+    payload = await response.json().catch(() => ({}));
+  } else {
+    const text = await response.text().catch(() => "");
+    payload = { detail: text };
+  }
   if (!response.ok) {
-    throw new Error(payload.detail || "Request failed");
+    const detail = Array.isArray(payload.detail)
+      ? payload.detail.map((item) => item.msg || item.message || JSON.stringify(item)).join(", ")
+      : payload.detail;
+    throw new Error(detail || `Request failed (${response.status})`);
   }
   return payload;
 }

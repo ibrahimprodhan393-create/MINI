@@ -9,6 +9,7 @@ create table if not exists users (
     last_seen_at timestamptz,
     wallet_balance numeric(12,2) not null default 0,
     selected_currency text not null default 'USD',
+    next_spin_at timestamptz,
     is_admin boolean not null default false,
     is_banned boolean not null default false,
     referral_code text not null unique,
@@ -16,6 +17,7 @@ create table if not exists users (
 );
 
 alter table users add column if not exists selected_currency text not null default 'USD';
+alter table users add column if not exists next_spin_at timestamptz;
 
 create table if not exists currencies (
     code text primary key,
@@ -153,6 +155,18 @@ create table if not exists orders (
     cancelled_at timestamptz
 );
 
+create table if not exists product_keys (
+    id bigserial primary key,
+    product_id bigint not null references products(id) on delete cascade,
+    key_value text not null,
+    status text not null default 'available' check (status in ('available', 'delivered')),
+    assigned_order_id bigint references orders(id) on delete set null,
+    assigned_user_id bigint references users(id) on delete set null,
+    uploaded_by bigint references users(id) on delete set null,
+    created_at timestamptz not null default now(),
+    delivered_at timestamptz
+);
+
 create table if not exists referrals (
     id bigserial primary key,
     referrer_user_id bigint not null references users(id) on delete cascade,
@@ -222,6 +236,7 @@ create table if not exists spin_history (
 create index if not exists idx_categories_parent on categories(parent_key, sort_order);
 create index if not exists idx_products_category on products(category_key);
 create index if not exists idx_orders_user on orders(user_id, created_at desc);
+create index if not exists idx_product_keys_product_status on product_keys(product_id, status, created_at);
 create index if not exists idx_payment_requests_status on payment_requests(status, created_at desc);
 create index if not exists idx_wallet_transactions_user on wallet_transactions(user_id, created_at desc);
 create index if not exists idx_support_tickets_user on support_tickets(user_id, updated_at desc);
@@ -297,10 +312,17 @@ where not exists (select 1 from notices where title = 'Welcome' and body like 'A
 insert into spin_prizes (title, amount, weight, sort_order)
 select 'Try Again', 0, 50, 10 where not exists (select 1 from spin_prizes where title = 'Try Again');
 insert into spin_prizes (title, amount, weight, sort_order)
-select 'Small Bonus', 2, 25, 20 where not exists (select 1 from spin_prizes where title = 'Small Bonus');
+select 'Small Bonus', 0.05, 25, 20 where not exists (select 1 from spin_prizes where title = 'Small Bonus');
 insert into spin_prizes (title, amount, weight, sort_order)
-select 'Wallet Bonus', 5, 15, 30 where not exists (select 1 from spin_prizes where title = 'Wallet Bonus');
+select 'Wallet Bonus', 0.10, 15, 30 where not exists (select 1 from spin_prizes where title = 'Wallet Bonus');
 insert into spin_prizes (title, amount, weight, sort_order)
-select 'Lucky Reward', 10, 8, 40 where not exists (select 1 from spin_prizes where title = 'Lucky Reward');
+select 'Lucky Reward', 0.25, 8, 40 where not exists (select 1 from spin_prizes where title = 'Lucky Reward');
 insert into spin_prizes (title, amount, weight, sort_order)
-select 'Mega Reward', 25, 2, 50 where not exists (select 1 from spin_prizes where title = 'Mega Reward');
+select 'Mega Reward', 0.50, 2, 50 where not exists (select 1 from spin_prizes where title = 'Mega Reward');
+
+update spin_prizes set amount = 0, weight = 50, sort_order = 10 where title = 'Try Again';
+update spin_prizes set amount = 0.05, weight = 25, sort_order = 20 where title = 'Small Bonus';
+update spin_prizes set amount = 0.10, weight = 15, sort_order = 30 where title = 'Wallet Bonus';
+update spin_prizes set amount = 0.25, weight = 8, sort_order = 40 where title = 'Lucky Reward';
+update spin_prizes set amount = 0.50, weight = 2, sort_order = 50 where title = 'Mega Reward';
+update spin_prizes set amount = least(amount, 0.50);

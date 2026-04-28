@@ -15,12 +15,14 @@ The schema creates all tables and starter data for:
 - users and Telegram auto-login profile storage
 - categories and products
 - nested sections/sub-sections
+- product key store for automatic delivery
 - wallet transactions and payment requests
 - editable payment methods
+- auto payment confirmation support
 - orders and invoice IDs
 - referrals and bonuses
 - coupons
-- lucky spin prizes and history
+- lucky spin prizes, history, and 3-4 day cooldown
 - selectable display currencies
 - admin-configurable Telegram support inbox
 - support tickets and replies
