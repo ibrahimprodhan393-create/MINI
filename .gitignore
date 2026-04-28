@@ -7,5 +7,6 @@ venv/
 .DS_Store
 edge-profile/
 reference-frame-*.png
+reference-new-frame-*.png
 reference-thumb.jpg
 tools/

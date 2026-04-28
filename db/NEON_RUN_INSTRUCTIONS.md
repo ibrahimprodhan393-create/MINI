@@ -24,7 +24,9 @@ The schema creates all tables and starter data for:
 - coupons
 - lucky spin prizes, history, and 24-hour per-user cooldown
 - selectable display currencies
+- saved account language preference
 - admin-configurable Telegram support inbox
+- admin-configurable Telegram reseller inbox
 - support tickets and replies
 - notices and broadcasts
 
