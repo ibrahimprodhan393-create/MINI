@@ -33,6 +33,7 @@ const state = {
   editingPaymentMethod: null,
   editingCoupon: null,
   keyProductId: null,
+  keyDurationDays: 1,
 };
 
 let mainButtonBound = false;
@@ -277,7 +278,10 @@ async function loadAdminData(tab) {
   if (tab === "categories") state.admin.categories = await api("/api/admin/categories");
   if (tab === "products") state.admin.products = await api("/api/admin/products");
   if (tab === "keys") {
-    const query = state.keyProductId ? `?product_id=${encodeURIComponent(state.keyProductId)}` : "";
+    const params = new URLSearchParams();
+    if (state.keyProductId) params.set("product_id", state.keyProductId);
+    if (state.keyDurationDays) params.set("duration_days", state.keyDurationDays);
+    const query = params.toString() ? `?${params.toString()}` : "";
     state.admin.keys = await api(`/api/admin/product-keys${query}`);
   }
   if (tab === "payments") state.admin.payments = await api("/api/admin/payments");
@@ -912,7 +916,7 @@ function renderAdminProducts() {
         <article class="admin-row">
           <div class="status-row"><h4>${escapeHtml(product.name)}</h4>${product.stock_status ? `<span class="badge success">Stock</span>` : `<span class="badge danger">Off</span>`}</div>
           <div class="muted">${escapeHtml(product.category_name || product.category_key)} - ${money(product.price_1_day)} / ${money(product.price_7_days)} / ${money(product.price_30_days)}</div>
-          <div class="muted">Keys: ${Number(product.available_keys || 0)} available - ${Number(product.delivered_keys || 0)} delivered</div>
+          <div class="muted">Keys: 1D ${Number(product.available_1_day_keys || 0)} - 7D ${Number(product.available_7_day_keys || 0)} - 30D ${Number(product.available_30_day_keys || 0)}</div>
           <div class="two-col">
             <button class="action-btn secondary" data-action="edit-product" data-id="${product.id}" type="button">${icon("pencil")} Edit</button>
             <button class="action-btn secondary" data-action="manage-product-keys" data-id="${product.id}" type="button">${icon("key-round")} Keys</button>
@@ -929,13 +933,22 @@ function renderAdminKeys() {
   const products = data.products || [];
   const keys = data.keys || [];
   const selectedId = state.keyProductId ? String(state.keyProductId) : "";
+  const selectedDuration = Number(state.keyDurationDays || 1);
   return `
     <form class="panel form-grid" id="admin-key-filter-form">
       <div class="field">
         <label>View keys for product</label>
         <select name="product_id">
           <option value="">All products</option>
-          ${products.map((product) => `<option value="${product.id}" ${String(product.id) === selectedId ? "selected" : ""}>${escapeHtml(product.name)} (${Number(product.available_keys || 0)} available)</option>`).join("")}
+          ${products.map((product) => `<option value="${product.id}" ${String(product.id) === selectedId ? "selected" : ""}>${escapeHtml(product.name)} (1D ${Number(product.available_1_day_keys || 0)} / 7D ${Number(product.available_7_day_keys || 0)} / 30D ${Number(product.available_30_day_keys || 0)})</option>`).join("")}
+        </select>
+      </div>
+      <div class="field">
+        <label>Duration bucket</label>
+        <select name="duration_days">
+          <option value="1" ${selectedDuration === 1 ? "selected" : ""}>1 Day Keys</option>
+          <option value="7" ${selectedDuration === 7 ? "selected" : ""}>7 Days Keys</option>
+          <option value="30" ${selectedDuration === 30 ? "selected" : ""}>30 Days Keys</option>
         </select>
       </div>
       <button class="action-btn secondary" type="submit">${icon("list-filter")} Load Keys</button>
@@ -945,6 +958,14 @@ function renderAdminKeys() {
         <label>Product</label>
         <select name="product_id" required>
           ${products.map((product) => `<option value="${product.id}" ${String(product.id) === selectedId ? "selected" : ""}>${escapeHtml(product.name)} - ${escapeHtml(product.category_name || "No section")}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field">
+        <label>Upload to duration</label>
+        <select name="duration_days" required>
+          <option value="1" ${selectedDuration === 1 ? "selected" : ""}>1 Day</option>
+          <option value="7" ${selectedDuration === 7 ? "selected" : ""}>7 Days</option>
+          <option value="30" ${selectedDuration === 30 ? "selected" : ""}>30 Days</option>
         </select>
       </div>
       <div class="field">
@@ -958,7 +979,7 @@ function renderAdminKeys() {
       ${keys.map((key) => `
         <article class="admin-row">
           <div class="status-row"><h4>${escapeHtml(key.product_name)}</h4>${statusBadge(key.status)}</div>
-          <div class="muted">${escapeHtml(key.category_name || "No section")} - ${shortDate(key.created_at)}</div>
+          <div class="muted">${Number(key.duration_days || 1)} Day - ${escapeHtml(key.category_name || "No section")} - ${shortDate(key.created_at)}</div>
           <div class="key-value">${escapeHtml(key.key_value)}</div>
           ${key.invoice_id ? `<div class="muted">Delivered to ${escapeHtml(key.first_name || key.username || key.telegram_id || "user")} - Invoice ${escapeHtml(key.invoice_id)}</div>` : ""}
           <button class="action-btn danger" data-action="delete-product-key" data-id="${key.id}" type="button">${icon("trash-2")} Delete Key</button>
@@ -1358,6 +1379,7 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "manage-product-keys") {
       state.keyProductId = Number(button.dataset.id);
+      state.keyDurationDays = 1;
       await loadAdminData("keys");
       render();
     }
@@ -1611,8 +1633,10 @@ document.addEventListener("submit", async (event) => {
     }
     if (form.id === "admin-key-filter-form") {
       event.preventDefault();
-      const value = new FormData(form).get("product_id");
+      const formData = new FormData(form);
+      const value = formData.get("product_id");
       state.keyProductId = value ? Number(value) : null;
+      state.keyDurationDays = Number(formData.get("duration_days") || 1);
       await loadAdminData("keys");
       render();
     }
@@ -1623,10 +1647,12 @@ document.addEventListener("submit", async (event) => {
         method: "POST",
         body: {
           product_id: Number(data.get("product_id")),
+          duration_days: Number(data.get("duration_days")),
           keys: data.get("keys"),
         },
       });
       state.keyProductId = Number(data.get("product_id"));
+      state.keyDurationDays = Number(data.get("duration_days") || 1);
       toast(`${result.inserted} keys uploaded`);
       await loadAdminData("keys");
       render();

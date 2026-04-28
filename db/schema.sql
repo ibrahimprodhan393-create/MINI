@@ -158,6 +158,7 @@ create table if not exists orders (
 create table if not exists product_keys (
     id bigserial primary key,
     product_id bigint not null references products(id) on delete cascade,
+    duration_days int not null default 1 check (duration_days in (1, 7, 30)),
     key_value text not null,
     status text not null default 'available' check (status in ('available', 'delivered')),
     assigned_order_id bigint references orders(id) on delete set null,
@@ -166,6 +167,8 @@ create table if not exists product_keys (
     created_at timestamptz not null default now(),
     delivered_at timestamptz
 );
+
+alter table product_keys add column if not exists duration_days int not null default 1 check (duration_days in (1, 7, 30));
 
 create table if not exists referrals (
     id bigserial primary key,
@@ -236,6 +239,7 @@ create table if not exists spin_history (
 create index if not exists idx_categories_parent on categories(parent_key, sort_order);
 create index if not exists idx_products_category on products(category_key);
 create index if not exists idx_orders_user on orders(user_id, created_at desc);
+create index if not exists idx_product_keys_product_duration_status on product_keys(product_id, duration_days, status, created_at);
 create index if not exists idx_product_keys_product_status on product_keys(product_id, status, created_at);
 create index if not exists idx_payment_requests_status on payment_requests(status, created_at desc);
 create index if not exists idx_wallet_transactions_user on wallet_transactions(user_id, created_at desc);
@@ -319,6 +323,11 @@ insert into spin_prizes (title, amount, weight, sort_order)
 select 'Lucky Reward', 0.25, 8, 40 where not exists (select 1 from spin_prizes where title = 'Lucky Reward');
 insert into spin_prizes (title, amount, weight, sort_order)
 select 'Mega Reward', 0.50, 2, 50 where not exists (select 1 from spin_prizes where title = 'Mega Reward');
+
+delete from spin_prizes duplicate
+using spin_prizes keeper
+where duplicate.title = keeper.title
+  and duplicate.id > keeper.id;
 
 update spin_prizes set amount = 0, weight = 50, sort_order = 10 where title = 'Try Again';
 update spin_prizes set amount = 0.05, weight = 25, sort_order = 20 where title = 'Small Bonus';

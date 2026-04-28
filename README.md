@@ -10,13 +10,14 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 - Product categories: Android, iPhone, PC, Root Device, Premium Tools, Subscription Plans
 - Nested sections/sub-sections controlled from admin
 - Product details: image, name, feature panel, video/YouTube embed, panel link, stock, 1/7/30 day prices, coupon, buy
-- Product key store: admins upload/delete keys, file links, or panel login lines per product
+- Product key store: admins upload/delete 1 Day, 7 Days, and 30 Days keys, file links, or panel login lines per product
 - Wallet: add balance request, payment method, transaction ID, screenshot upload
 - Admin users: add balance or remove balance from any user
 - Checkout payment flow: Wallet Pay auto-deducts; manual payment approval can auto-create the order
 - Manual payments stay admin-approved, and auto payments can be confirmed by a secure webhook
 - Rejected payments can be removed from the admin panel
 - Automatic delivery: if a stored key is available, paid orders are delivered instantly
+- Automatic delivery picks the stored key from the matching 1/7/30 day bucket
 - Admin payment method editor: name, instructions, account details, QR image, active/off
 - Orders: invoice ID, pending, approved, delivered, cancelled, refund on cancel
 - Referral link and bonus wallet credit for new user joins

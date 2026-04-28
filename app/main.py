@@ -114,7 +114,15 @@ class ProductIn(BaseModel):
 
 class ProductKeyUploadIn(BaseModel):
     product_id: int
+    duration_days: int = 1
     keys: str = Field(min_length=1, max_length=60000)
+
+    @field_validator("duration_days")
+    @classmethod
+    def valid_key_duration(cls, value: int) -> int:
+        if value not in {1, 7, 30}:
+            raise ValueError("Duration must be 1, 7, or 30 days.")
+        return value
 
 
 class CategoryIn(BaseModel):
@@ -271,6 +279,63 @@ async def run_schema() -> None:
 
 async def ensure_spin_runtime_schema(conn: asyncpg.Connection) -> None:
     await conn.execute("alter table users add column if not exists next_spin_at timestamptz")
+    await conn.execute(
+        """
+        create table if not exists spin_prizes (
+            id bigserial primary key,
+            title text not null,
+            amount numeric(12,2) not null default 0,
+            weight int not null default 1,
+            active boolean not null default true,
+            sort_order int not null default 0,
+            created_at timestamptz not null default now()
+        )
+        """
+    )
+    await conn.execute(
+        """
+        create table if not exists spin_history (
+            id bigserial primary key,
+            user_id bigint not null references users(id) on delete cascade,
+            prize_id bigint references spin_prizes(id) on delete set null,
+            prize_title text not null,
+            amount numeric(12,2) not null default 0,
+            created_at timestamptz not null default now()
+        )
+        """
+    )
+    await conn.execute(
+        """
+        insert into spin_prizes (title, amount, weight, sort_order)
+        select 'Try Again', 0, 50, 10 where not exists (select 1 from spin_prizes where title = 'Try Again')
+        """
+    )
+    await conn.execute(
+        "insert into spin_prizes (title, amount, weight, sort_order) select 'Small Bonus', 0.05, 25, 20 where not exists (select 1 from spin_prizes where title = 'Small Bonus')"
+    )
+    await conn.execute(
+        "insert into spin_prizes (title, amount, weight, sort_order) select 'Wallet Bonus', 0.10, 15, 30 where not exists (select 1 from spin_prizes where title = 'Wallet Bonus')"
+    )
+    await conn.execute(
+        "insert into spin_prizes (title, amount, weight, sort_order) select 'Lucky Reward', 0.25, 8, 40 where not exists (select 1 from spin_prizes where title = 'Lucky Reward')"
+    )
+    await conn.execute(
+        "insert into spin_prizes (title, amount, weight, sort_order) select 'Mega Reward', 0.50, 2, 50 where not exists (select 1 from spin_prizes where title = 'Mega Reward')"
+    )
+    await conn.execute(
+        """
+        delete from spin_prizes duplicate
+        using spin_prizes keeper
+        where duplicate.title = keeper.title
+          and duplicate.id > keeper.id
+        """
+    )
+    await conn.execute("update spin_prizes set amount = 0, weight = 50, sort_order = 10 where title = 'Try Again'")
+    await conn.execute("update spin_prizes set amount = 0.05, weight = 25, sort_order = 20 where title = 'Small Bonus'")
+    await conn.execute("update spin_prizes set amount = 0.10, weight = 15, sort_order = 30 where title = 'Wallet Bonus'")
+    await conn.execute("update spin_prizes set amount = 0.25, weight = 8, sort_order = 40 where title = 'Lucky Reward'")
+    await conn.execute("update spin_prizes set amount = 0.50, weight = 2, sort_order = 50 where title = 'Mega Reward'")
+    await conn.execute("update spin_prizes set amount = least(amount, $1)", MAX_SPIN_BONUS)
 
 
 async def ensure_product_keys_runtime_schema(conn: asyncpg.Connection) -> None:
@@ -279,6 +344,7 @@ async def ensure_product_keys_runtime_schema(conn: asyncpg.Connection) -> None:
         create table if not exists product_keys (
             id bigserial primary key,
             product_id bigint not null references products(id) on delete cascade,
+            duration_days int not null default 1 check (duration_days in (1, 7, 30)),
             key_value text not null,
             status text not null default 'available' check (status in ('available', 'delivered')),
             assigned_order_id bigint references orders(id) on delete set null,
@@ -288,6 +354,12 @@ async def ensure_product_keys_runtime_schema(conn: asyncpg.Connection) -> None:
             delivered_at timestamptz
         )
         """
+    )
+    await conn.execute(
+        "alter table product_keys add column if not exists duration_days int not null default 1 check (duration_days in (1, 7, 30))"
+    )
+    await conn.execute(
+        "create index if not exists idx_product_keys_product_duration_status on product_keys(product_id, duration_days, status, created_at)"
     )
     await conn.execute(
         "create index if not exists idx_product_keys_product_status on product_keys(product_id, status, created_at)"
@@ -467,12 +539,14 @@ async def auto_deliver_order_key_locked(
         select *
           from product_keys
          where product_id = $1
+           and duration_days = $2
            and status = 'available'
          order by created_at, id
          for update skip locked
          limit 1
         """,
         order["product_id"],
+        order["duration_days"],
     )
     if not key:
         return order, None
@@ -1289,7 +1363,10 @@ async def admin_products(admin: Annotated[asyncpg.Record, Depends(admin_user)]) 
             """
             select p.*, c.name as category_name,
                    (select count(*) from product_keys k where k.product_id = p.id and k.status = 'available') as available_keys,
-                   (select count(*) from product_keys k where k.product_id = p.id and k.status = 'delivered') as delivered_keys
+                   (select count(*) from product_keys k where k.product_id = p.id and k.status = 'delivered') as delivered_keys,
+                   (select count(*) from product_keys k where k.product_id = p.id and k.duration_days = 1 and k.status = 'available') as available_1_day_keys,
+                   (select count(*) from product_keys k where k.product_id = p.id and k.duration_days = 7 and k.status = 'available') as available_7_day_keys,
+                   (select count(*) from product_keys k where k.product_id = p.id and k.duration_days = 30 and k.status = 'available') as available_30_day_keys
               from products p
               left join categories c on c.key = p.category_key
              order by p.created_at desc
@@ -1303,14 +1380,20 @@ async def admin_products(admin: Annotated[asyncpg.Record, Depends(admin_user)]) 
 async def admin_product_keys(
     admin: Annotated[asyncpg.Record, Depends(admin_user)],
     product_id: int | None = None,
+    duration_days: int | None = None,
 ) -> dict[str, Any]:
+    if duration_days is not None and duration_days not in {1, 7, 30}:
+        raise HTTPException(status_code=400, detail="Duration must be 1, 7, or 30 days.")
     async with connection() as conn:
         await ensure_product_keys_runtime_schema(conn)
         products = await conn.fetch(
             """
             select p.id, p.name, c.name as category_name,
                    (select count(*) from product_keys k where k.product_id = p.id and k.status = 'available') as available_keys,
-                   (select count(*) from product_keys k where k.product_id = p.id and k.status = 'delivered') as delivered_keys
+                   (select count(*) from product_keys k where k.product_id = p.id and k.status = 'delivered') as delivered_keys,
+                   (select count(*) from product_keys k where k.product_id = p.id and k.duration_days = 1 and k.status = 'available') as available_1_day_keys,
+                   (select count(*) from product_keys k where k.product_id = p.id and k.duration_days = 7 and k.status = 'available') as available_7_day_keys,
+                   (select count(*) from product_keys k where k.product_id = p.id and k.duration_days = 30 and k.status = 'available') as available_30_day_keys
               from products p
               left join categories c on c.key = p.category_key
              order by c.sort_order nulls last, p.name
@@ -1326,10 +1409,12 @@ async def admin_product_keys(
               left join orders o on o.id = k.assigned_order_id
               left join users u on u.id = k.assigned_user_id
              where ($1::bigint is null or k.product_id = $1)
+               and ($2::int is null or k.duration_days = $2)
              order by k.created_at desc
              limit 500
             """,
             product_id,
+            duration_days,
         )
     return {"products": jsonable(products), "keys": jsonable(keys)}
 
@@ -1358,11 +1443,12 @@ async def admin_upload_product_keys(
             raise HTTPException(status_code=404, detail="Product not found.")
         rows = await conn.fetch(
             """
-            insert into product_keys (product_id, key_value, uploaded_by)
-            select $1, unnest($2::text[]), $3
+            insert into product_keys (product_id, duration_days, key_value, uploaded_by)
+            select $1, $2, unnest($3::text[]), $4
             returning *
             """,
             data.product_id,
+            data.duration_days,
             raw_keys,
             admin["id"],
         )
@@ -1935,7 +2021,7 @@ async def deliver_order(
             else:
                 order, key = await auto_deliver_order_key_locked(conn, order_id)
                 if order["status"] != "delivered":
-                    raise HTTPException(status_code=400, detail="No available key. Enter manual delivery text or upload keys first.")
+                    raise HTTPException(status_code=400, detail=f"No available {order['duration_days']} day key. Enter manual delivery text or upload keys for this duration first.")
                 if data.note:
                     order = await conn.fetchrow(
                         "update orders set admin_note = $2 where id = $1 returning *",
