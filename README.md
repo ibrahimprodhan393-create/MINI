@@ -13,6 +13,8 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 - Product key store: admins upload/delete 1 Day, 7 Days, and 30 Days keys, file links, or panel login lines per product
 - Wallet: add balance request, payment method, transaction ID, screenshot upload
 - Account screen: add fund, payment details, payment request status, daily spin, language, referral, support, profile, currency, reseller apply
+- Account screen uses compact action rows for Add Fund, AI Assistant, Daily Spin, Language, Referral, Promo Code, Support, Profile/Currency, and Reseller
+- AI Assistant chat answers Mini App questions about wallet, payment, orders, products, spin, referral, support, reseller, currency, language, and admin usage
 - History screen contains only wallet/transaction history, and Orders screen contains only order history
 - Admin users: add balance or remove balance from any user
 - Checkout payment flow: Wallet Pay auto-deducts; manual payment approval can auto-create the order
@@ -30,7 +32,7 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 - Support page with admin-configurable Telegram inbox button and support tickets with admin replies
 - Admin-configurable reseller Telegram contact for the Apply for Reseller button
 - Telegram notifications for payments, orders, delivery, support
-- Admin dashboard, sections, products, key store, orders, payments, users, coupons, supporter/reseller settings, tickets, broadcast
+- Admin dashboard, sections, products, key store, orders, payments, users, coupons, supporter/reseller/AI settings, tickets, broadcast
 
 ## Deploy To Neon And Render
 

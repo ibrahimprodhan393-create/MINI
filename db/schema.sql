@@ -296,7 +296,10 @@ insert into app_settings (key, value) values
     ('reseller_telegram_username', ''),
     ('reseller_telegram_user_id', ''),
     ('reseller_note', 'Apply for reseller pricing through Telegram.'),
-    ('reseller_enabled', 'true')
+    ('reseller_enabled', 'true'),
+    ('ai_assistant_intro', 'Ask me anything about wallet, payment, orders, products, spin, referral, support, reseller, currency, and account settings.'),
+    ('ai_assistant_custom_knowledge', ''),
+    ('ai_assistant_enabled', 'true')
 on conflict (key) do nothing;
 
 insert into payment_methods (name, instructions, method_type, account_label, account_value, sort_order)

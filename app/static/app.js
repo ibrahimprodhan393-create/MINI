@@ -29,6 +29,9 @@ const state = {
   ticketMessages: [],
   supportSettings: null,
   resellerSettings: null,
+  aiSettings: null,
+  aiMessages: [],
+  aiBusy: false,
   adminTab: "dashboard",
   admin: {},
   editingProduct: null,
@@ -209,6 +212,7 @@ async function loadDashboard() {
   state.currencies = state.dashboard.currencies || state.currencies || [];
   state.supportSettings = state.dashboard.support || state.supportSettings;
   state.resellerSettings = state.dashboard.reseller || state.resellerSettings;
+  state.aiSettings = state.dashboard.assistant || state.aiSettings;
   state.categories = state.dashboard.categories || [];
   state.products = state.dashboard.products || [];
 }
@@ -264,6 +268,14 @@ async function loadRouteData(route = state.route) {
     state.tickets = data.tickets || [];
     state.ticketMessages = data.messages || [];
     state.supportSettings = data.support || state.supportSettings;
+  }
+  if (route === "assistant") {
+    if (!state.aiMessages.length) {
+      state.aiMessages = [{
+        role: "assistant",
+        text: state.aiSettings?.intro || "Ask me anything about this Mini App.",
+      }];
+    }
   }
   if (route === "admin") {
     await loadAdminData(state.adminTab);
@@ -339,7 +351,7 @@ function topbar() {
           <p>${state.session?.is_admin ? "ADMIN" : "CUSTOMER"}</p>
         </div>
       </div>
-      <button class="balance-chip" data-action="set-route" data-route="wallet" aria-label="Wallet balance">
+      <button class="balance-chip" data-action="set-route" data-route="profile" aria-label="Wallet balance">
         <span>Balance</span>
         <strong>${money(user.wallet_balance)}</strong>
       </button>
@@ -380,6 +392,42 @@ function walletCard(user) {
         </button>
       </div>
     </section>
+  `;
+}
+
+function accountHero(user, name) {
+  const stats = state.dashboard?.stats || {};
+  return `
+    <section class="account-hero">
+      <div class="profile-chip">
+        <div class="avatar">${user.photo_url ? `<img src="${escapeHtml(user.photo_url)}" alt="${escapeHtml(name)}" />` : initials(name)}</div>
+        <div>
+          <h2>${escapeHtml(name)}</h2>
+          <p>${user.username ? `@${escapeHtml(user.username)}` : `ID ${escapeHtml(user.telegram_id)}`}</p>
+        </div>
+      </div>
+      <div class="account-balance">
+        <small>Wallet balance</small>
+        <strong>${money(user.wallet_balance)}</strong>
+      </div>
+      <div class="metric-grid">
+        <div class="metric"><span>Total orders</span><strong>${stats.total_orders || 0}</strong></div>
+        <div class="metric"><span>Active subscriptions</span><strong>${stats.active_subscriptions || 0}</strong></div>
+      </div>
+    </section>
+  `;
+}
+
+function accountActionRow(iconName, title, subtitle, action, route = "", extra = "") {
+  return `
+    <button class="account-row ${extra}" data-action="${action}" ${route ? `data-route="${route}"` : ""} type="button">
+      <span class="account-row-icon">${icon(iconName)}</span>
+      <span class="account-row-text">
+        <strong>${escapeHtml(title)}</strong>
+        <small>${escapeHtml(subtitle)}</small>
+      </span>
+      <span class="account-chevron">${icon("chevron-right")}</span>
+    </button>
   `;
 }
 
@@ -768,17 +816,71 @@ function renderSupport() {
   `;
 }
 
+function renderAssistant() {
+  const messages = state.aiMessages.length ? state.aiMessages : [{
+    role: "assistant",
+    text: state.aiSettings?.intro || "Ask me anything about this Mini App.",
+  }];
+  const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+  const suggestions = latestAssistant?.suggestions || ["Add fund কিভাবে করব?", "আমার অর্ডার কোথায়?", "Daily spin কখন পাব?", "Support কোথায়?"];
+  return `
+    <div class="section-head"><h3>AI Assistant</h3><button data-action="set-route" data-route="profile">Back</button></div>
+    <section class="assistant-panel">
+      <div class="assistant-header">
+        <span class="account-row-icon">${icon("sparkles")}</span>
+        <div>
+          <h3>Mini App AI</h3>
+          <p>Wallet, payment, order, spin, referral, support, reseller, product and admin questions</p>
+        </div>
+      </div>
+      <div class="assistant-chat">
+        ${messages.map((message) => `
+          <div class="chat-bubble ${message.role === "user" ? "user" : "assistant"}">
+            ${escapeHtml(message.text)}
+          </div>
+        `).join("")}
+        ${state.aiBusy ? `<div class="chat-bubble assistant">Typing...</div>` : ""}
+      </div>
+      <div class="assistant-suggestions">
+        ${suggestions.map((suggestion) => `<button type="button" data-action="ai-suggestion" data-message="${escapeHtml(suggestion)}">${escapeHtml(suggestion)}</button>`).join("")}
+      </div>
+      <form class="assistant-form" id="ai-chat-form">
+        <input name="message" placeholder="Ask a question..." autocomplete="off" required />
+        <button class="action-btn" type="submit" ${state.aiBusy ? "disabled" : ""}>${icon("send")}</button>
+      </form>
+    </section>
+  `;
+}
+
 function renderProfile() {
   const user = state.dashboard?.user || state.session?.user || {};
   const name = userName(user);
-  const support = state.supportSettings || {};
   const reseller = state.resellerSettings || {};
-  const supportUrl = telegramContactUrl(support);
   const resellerUrl = telegramContactUrl(reseller);
   const selectedLanguage = user.selected_language || "en";
+  const selectedLanguageName = languageOptions.find(([code]) => code === selectedLanguage)?.[1] || "English";
   return `
-    ${walletCard(user)}
-    <div class="section-head"><h3>Add Fund</h3></div>
+    ${accountHero(user, name)}
+    <section class="account-menu">
+      ${accountActionRow("wallet-cards", "Add Fund", "Payment details, transaction ID, screenshot", "focus-add-fund")}
+      ${accountActionRow("sparkles", "AI Assistant", "Ask wallet, payment, order, spin and support questions", "set-route", "assistant", "highlight")}
+      ${accountActionRow("rotate-cw", "Daily Spinner", "One spin every 24 hours", "set-route", "spin")}
+      ${accountActionRow("languages", "Language", `Selected: ${selectedLanguageName}`, "focus-language")}
+      ${accountActionRow("share-2", "Referral", "Referral link, bonus and history", "set-route", "referral")}
+      ${accountActionRow("badge-percent", "Promo Code", "Check discount before buying", "set-route", "coupon")}
+      ${accountActionRow("headphones", "Support", "Telegram inbox and support tickets", "set-route", "support")}
+      ${accountActionRow("user-circle", "Profile & Currency", "Telegram profile and display currency", "focus-profile")}
+      <button class="account-row reseller-row" data-action="open-reseller-chat" data-url="${escapeHtml(reseller.enabled ? resellerUrl : "")}" type="button">
+        <span class="account-row-icon">${icon("handshake")}</span>
+        <span class="account-row-text">
+          <strong>Apply for Reseller</strong>
+          <small>${reseller.telegram_username ? `@${escapeHtml(reseller.telegram_username)}` : reseller.telegram_user_id ? `ID ${escapeHtml(reseller.telegram_user_id)}` : "Reseller contact not set"}</small>
+        </span>
+        <span class="account-chevron">${icon("send")}</span>
+      </button>
+      ${state.session?.is_admin ? accountActionRow("shield-check", "Admin Panel", "Manage store, orders, payments and users", "set-route", "admin", "admin-row-link") : ""}
+    </section>
+    <div class="section-head" id="add-fund-panel"><h3>Add Fund</h3></div>
     ${renderPaymentForm()}
     <div class="section-head"><h3>Payment Requests</h3></div>
     <section class="table-lite">
@@ -790,11 +892,7 @@ function renderProfile() {
         </article>
       `).join("") : `<div class="empty">No payment requests</div>`}
     </section>
-    <div class="section-head"><h3>Daily Spinner</h3></div>
-    <section class="panel form-grid">
-      <button class="action-btn" data-action="set-route" data-route="spin" type="button">${icon("rotate-cw")} Daily Spin</button>
-    </section>
-    <div class="section-head"><h3>Language</h3></div>
+    <div class="section-head" id="language-panel"><h3>Language</h3></div>
     <form class="panel form-grid" id="language-form">
       <div class="field">
         <label>Select Language</label>
@@ -806,23 +904,7 @@ function renderProfile() {
       </div>
       <button class="action-btn secondary" type="submit">${icon("languages")} Save Language</button>
     </form>
-    <div class="section-head"><h3>Referral</h3></div>
-    <section class="panel form-grid">
-      <button class="action-btn secondary" data-action="set-route" data-route="referral" type="button">${icon("share-2")} Referral</button>
-      <button class="action-btn secondary" data-action="set-route" data-route="coupon" type="button">${icon("badge-percent")} Promo Code</button>
-    </section>
-    <div class="section-head"><h3>Support</h3></div>
-    <section class="panel support-card">
-      <div class="support-icon">${icon("headphones")}</div>
-      <div>
-        <h3>${escapeHtml(support.display_name || "Store Support")}</h3>
-        <p>${escapeHtml(support.note || "Tap to open Telegram inbox for help.")}</p>
-        <small>${support.telegram_username ? `@${escapeHtml(support.telegram_username)}` : support.telegram_user_id ? `ID ${escapeHtml(support.telegram_user_id)}` : "Support contact not set"}</small>
-      </div>
-      <button class="action-btn" data-action="open-support-chat" data-url="${escapeHtml(support.enabled ? supportUrl : "")}" type="button">${icon("send")} Open Inbox</button>
-      <button class="action-btn secondary" data-action="set-route" data-route="support" type="button">${icon("message-circle")} Tickets</button>
-    </section>
-    <div class="section-head"><h3>Profile</h3></div>
+    <div class="section-head" id="profile-panel"><h3>Profile</h3></div>
     <section class="panel">
       <div class="profile-chip">
         <div class="avatar">${user.photo_url ? `<img src="${escapeHtml(user.photo_url)}" alt="${escapeHtml(name)}" />` : initials(name)}</div>
@@ -836,7 +918,6 @@ function renderProfile() {
         <div class="metric"><span>Join date</span><strong style="font-size:15px;">${shortDate(user.joined_at)}</strong></div>
       </div>
     </section>
-    <div class="section-head"><h3>Currency</h3></div>
     <form class="panel form-grid" id="currency-form">
       <div class="field">
         <label>Preferred Currency</label>
@@ -850,19 +931,6 @@ function renderProfile() {
       </div>
       <button class="action-btn secondary" type="submit">${icon("coins")} Save Currency</button>
     </form>
-    <div class="section-head"><h3>Reseller</h3></div>
-    <section class="panel support-card">
-      <div class="support-icon">${icon("handshake")}</div>
-      <div>
-        <h3>${escapeHtml(reseller.display_name || "Reseller Manager")}</h3>
-        <p>${escapeHtml(reseller.note || "Apply for reseller pricing through Telegram.")}</p>
-        <small>${reseller.telegram_username ? `@${escapeHtml(reseller.telegram_username)}` : reseller.telegram_user_id ? `ID ${escapeHtml(reseller.telegram_user_id)}` : "Reseller contact not set"}</small>
-      </div>
-      <button class="action-btn" data-action="open-reseller-chat" data-url="${escapeHtml(reseller.enabled ? resellerUrl : "")}" type="button">
-        ${icon("send")} Apply for Reseller
-      </button>
-    </section>
-    ${state.session?.is_admin ? `<section class="panel form-grid"><button class="action-btn" data-action="set-route" data-route="admin" type="button">${icon("shield-check")} Admin Panel</button></section>` : ""}
   `;
 }
 
@@ -1229,6 +1297,7 @@ function renderAdminCoupons() {
 function renderAdminSupport() {
   const support = state.admin.support?.support || {};
   const reseller = state.admin.support?.reseller || {};
+  const assistant = state.admin.support?.assistant || {};
   return `
     <div class="section-head"><h3>Support Contact</h3></div>
     <form class="panel form-grid" id="admin-support-settings-form">
@@ -1284,6 +1353,25 @@ function renderAdminSupport() {
       </div>
       <button class="action-btn" type="submit">${icon("save")} Save Reseller</button>
     </form>
+    <div class="section-head"><h3>AI Assistant</h3></div>
+    <form class="panel form-grid" id="admin-assistant-settings-form">
+      <div class="field">
+        <label>Intro message</label>
+        <textarea name="intro" required>${escapeHtml(assistant.intro || "Ask me anything about this Mini App.")}</textarea>
+      </div>
+      <div class="field">
+        <label>Custom knowledge</label>
+        <textarea name="custom_knowledge" placeholder="Write extra FAQ, payment rules, delivery rules, reseller rules, or any store-specific answer.">${escapeHtml(assistant.custom_knowledge || "")}</textarea>
+      </div>
+      <div class="field">
+        <label>Status</label>
+        <select name="enabled">
+          <option value="true" ${assistant.enabled !== false ? "selected" : ""}>Active</option>
+          <option value="false" ${assistant.enabled === false ? "selected" : ""}>Inactive</option>
+        </select>
+      </div>
+      <button class="action-btn" type="submit">${icon("save")} Save AI Assistant</button>
+    </form>
   `;
 }
 
@@ -1338,6 +1426,7 @@ function renderView() {
   if (state.route === "spin") return renderSpin();
   if (state.route === "coupon") return renderCouponPage();
   if (state.route === "support") return renderSupport();
+  if (state.route === "assistant") return renderAssistant();
   if (state.route === "profile") return renderProfile();
   if (state.route === "admin") return renderAdmin();
   return renderHome();
@@ -1470,6 +1559,21 @@ document.addEventListener("click", async (event) => {
       await loadDashboard();
       await loadRouteData("spin");
       render();
+    }
+    if (action === "focus-add-fund" || action === "focus-language" || action === "focus-profile") {
+      const targetId = {
+        "focus-add-fund": "add-fund-panel",
+        "focus-language": "language-panel",
+        "focus-profile": "profile-panel",
+      }[action];
+      document.getElementById(targetId)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    if (action === "ai-suggestion") {
+      const input = document.querySelector("#ai-chat-form [name='message']");
+      if (input) {
+        input.value = button.dataset.message || "";
+        input.focus();
+      }
     }
     if (action === "copy-referral") {
       await navigator.clipboard.writeText(state.referrals?.referral_link || state.referrals?.referral_code || "");
@@ -1669,6 +1773,26 @@ document.addEventListener("submit", async (event) => {
       if (state.session?.user) state.session.user = result.user;
       if (state.dashboard?.user) state.dashboard.user = result.user;
       toast("Language updated");
+      render();
+    }
+    if (form.id === "ai-chat-form") {
+      event.preventDefault();
+      const data = new FormData(form);
+      const message = String(data.get("message") || "").trim();
+      if (!message) return;
+      state.aiMessages.push({ role: "user", text: message });
+      state.aiBusy = true;
+      render();
+      const result = await api("/api/assistant/chat", {
+        method: "POST",
+        body: { message },
+      });
+      state.aiMessages.push({
+        role: "assistant",
+        text: result.reply,
+        suggestions: result.suggestions || [],
+      });
+      state.aiBusy = false;
       render();
     }
     if (form.id === "currency-form") {
@@ -1891,6 +2015,26 @@ document.addEventListener("submit", async (event) => {
       toast("Reseller contact saved");
       render();
     }
+    if (form.id === "admin-assistant-settings-form") {
+      event.preventDefault();
+      const data = new FormData(form);
+      const result = await api("/api/admin/assistant-settings", {
+        method: "POST",
+        body: {
+          intro: data.get("intro") || "Ask me anything about this Mini App.",
+          custom_knowledge: data.get("custom_knowledge") || "",
+          enabled: data.get("enabled") === "true",
+        },
+      });
+      state.admin.support = result;
+      state.aiSettings = {
+        intro: result.assistant?.intro,
+        enabled: result.assistant?.enabled,
+      };
+      state.aiMessages = [];
+      toast("AI Assistant saved");
+      render();
+    }
     if (form.classList.contains("admin-ticket-reply-form")) {
       event.preventDefault();
       const data = new FormData(form);
@@ -1918,6 +2062,10 @@ document.addEventListener("submit", async (event) => {
       form.reset();
     }
   } catch (error) {
+    if (form.id === "ai-chat-form") {
+      state.aiBusy = false;
+      render();
+    }
     toast(error.message);
   }
 });

@@ -27,6 +27,7 @@ The schema creates all tables and starter data for:
 - saved account language preference
 - admin-configurable Telegram support inbox
 - admin-configurable Telegram reseller inbox
+- AI Assistant intro, status, and custom knowledge settings
 - support tickets and replies
 - notices and broadcasts
 

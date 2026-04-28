@@ -18,11 +18,12 @@ This file saves the latest change set in plain text because Git is not available
 - Bottom navigation now has four main tabs: Shop, Orders, History, Account.
 - History now shows only wallet/transaction history.
 - Orders remains only order history.
-- Account now contains:
+- Account now uses compact action rows and contains:
   - Wallet balance
   - Add Fund form
   - Payment method details
   - Payment request status/history
+  - AI Assistant
   - Daily Spin button
   - Language selector
   - Referral and Promo Code buttons
@@ -41,6 +42,16 @@ This file saves the latest change set in plain text because Git is not available
   - Note
   - Active/inactive status
 - Users pressing Apply for Reseller open the reseller Telegram contact configured by admin.
+- New AI Assistant settings were added in the same admin Supporter tab:
+  - Intro message
+  - Custom knowledge
+  - Active/inactive status
+
+## AI Assistant
+
+- Added a new AI Assistant section from the Account screen.
+- It answers questions about wallet, payment, orders, delivery, product sections, lucky spin, referral, coupon, support, reseller, language/currency, and admin usage.
+- It uses live app data and admin custom knowledge, without requiring an external AI API key.
 
 ## Database Changes
 
@@ -51,12 +62,18 @@ This file saves the latest change set in plain text because Git is not available
   - `reseller_telegram_user_id`
   - `reseller_note`
   - `reseller_enabled`
+- Added AI Assistant keys in `app_settings`:
+  - `ai_assistant_intro`
+  - `ai_assistant_custom_knowledge`
+  - `ai_assistant_enabled`
 
 ## New API Endpoints
 
 - `GET /api/reseller-settings`
+- `POST /api/assistant/chat`
 - `POST /api/profile/language`
 - `POST /api/admin/reseller-settings`
+- `POST /api/admin/assistant-settings`
 
 ## Render Start Command
 

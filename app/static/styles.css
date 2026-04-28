@@ -9,6 +9,10 @@
   --accent: #ff3148;
   --accent-2: #ff5264;
   --accent-soft: rgba(255, 49, 72, 0.14);
+  --teal: #30d5c8;
+  --amber: #ffbd45;
+  --violet: #8c7bff;
+  --green-soft: rgba(53, 211, 126, 0.12);
   --border: rgba(255, 255, 255, 0.07);
   --success: #35d37e;
   --warning: #ffc24b;
@@ -53,8 +57,9 @@ button {
   margin: 0 auto;
   padding: max(18px, env(safe-area-inset-top)) 12px calc(28px + env(safe-area-inset-bottom));
   background:
-    radial-gradient(circle at 18% 0%, rgba(255, 49, 72, 0.16), transparent 24%),
-    linear-gradient(180deg, #090a10 0%, #07080d 42%, #05060a 100%);
+    linear-gradient(135deg, rgba(255, 49, 72, 0.09) 0 1px, transparent 1px 12px),
+    linear-gradient(180deg, #0b0c12 0%, #07080d 42%, #05060a 100%);
+  background-attachment: fixed;
 }
 
 .splash {
@@ -111,7 +116,7 @@ main {
 .balance-chip {
   min-height: 74px;
   border-radius: 18px;
-  background: linear-gradient(145deg, rgba(24, 26, 37, 0.95), rgba(14, 15, 23, 0.98));
+  background: linear-gradient(145deg, rgba(29, 31, 43, 0.96), rgba(12, 14, 22, 0.98));
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
 }
@@ -152,7 +157,7 @@ main {
   width: 48px;
   height: 48px;
   border-radius: 16px;
-  background: linear-gradient(135deg, var(--accent), #c51f32);
+  background: linear-gradient(135deg, var(--accent), #ff8a45);
   color: white;
   display: grid;
   place-items: center;
@@ -240,10 +245,10 @@ main {
 }
 
 .tab-btn.active {
-  background: linear-gradient(145deg, rgba(255, 49, 72, 0.15), rgba(255, 49, 72, 0.04));
+  background: linear-gradient(145deg, rgba(255, 49, 72, 0.18), rgba(48, 213, 200, 0.07));
   color: var(--accent-2);
-  border: 1px solid rgba(255, 49, 72, 0.28);
-  box-shadow: 0 12px 24px rgba(255, 49, 72, 0.08);
+  border: 1px solid rgba(255, 49, 72, 0.32);
+  box-shadow: 0 12px 24px rgba(255, 49, 72, 0.1);
 }
 
 .wallet-card {
@@ -276,6 +281,106 @@ main {
   justify-content: space-between;
   align-items: flex-end;
   gap: 12px;
+}
+
+.account-hero {
+  border-radius: 18px;
+  background: linear-gradient(145deg, rgba(23, 24, 34, 0.98), rgba(12, 13, 20, 0.98));
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  padding: 16px;
+  display: grid;
+  gap: 14px;
+}
+
+.account-balance {
+  border-radius: 16px;
+  border: 1px solid rgba(255, 49, 72, 0.18);
+  background: rgba(255, 49, 72, 0.09);
+  padding: 13px;
+}
+
+.account-balance small {
+  color: var(--muted);
+  font-weight: 900;
+}
+
+.account-balance strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--success);
+  font-size: 28px;
+  line-height: 1.1;
+}
+
+.account-menu {
+  display: grid;
+  gap: 9px;
+  margin-top: 12px;
+}
+
+.account-row {
+  width: 100%;
+  min-height: 70px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: linear-gradient(145deg, rgba(23, 24, 34, 0.98), rgba(12, 13, 20, 0.98));
+  color: var(--text);
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 12px;
+  text-align: left;
+}
+
+.account-row.highlight {
+  border-color: rgba(255, 49, 72, 0.35);
+  background: linear-gradient(145deg, rgba(255, 49, 72, 0.14), rgba(17, 18, 27, 0.98));
+}
+
+.account-row-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 15px;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 49, 72, 0.12);
+  color: var(--accent-2);
+}
+
+.account-row-icon svg,
+.account-chevron svg {
+  width: 20px;
+  height: 20px;
+}
+
+.account-row-text {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.account-row-text strong,
+.assistant-header h3 {
+  margin: 0;
+}
+
+.account-row-text small {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-chevron {
+  color: var(--muted);
+  display: grid;
+  place-items: center;
+}
+
+.reseller-row {
+  border-color: rgba(255, 193, 7, 0.35);
 }
 
 .notice-stack {
@@ -690,6 +795,94 @@ main {
   place-items: center;
   background: linear-gradient(135deg, var(--accent), #d51d32);
   color: white;
+}
+
+.assistant-panel {
+  border-radius: 18px;
+  background: linear-gradient(145deg, rgba(23, 24, 34, 0.98), rgba(12, 13, 20, 0.98));
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.assistant-header {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  gap: 11px;
+  align-items: center;
+}
+
+.assistant-header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.assistant-chat {
+  min-height: 320px;
+  max-height: 58vh;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: rgba(6, 7, 12, 0.45);
+  padding: 12px;
+}
+
+.chat-bubble {
+  width: fit-content;
+  max-width: 88%;
+  border-radius: 16px;
+  padding: 10px 12px;
+  color: var(--text);
+  line-height: 1.42;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-bubble.assistant {
+  background: #1a1c27;
+  border: 1px solid var(--border);
+}
+
+.chat-bubble.user {
+  justify-self: end;
+  background: linear-gradient(135deg, var(--accent), #dc2438);
+  color: white;
+}
+
+.assistant-suggestions {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.assistant-suggestions button {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #1a1c27;
+  color: var(--text);
+  min-height: 36px;
+  padding: 0 12px;
+  font-weight: 800;
+}
+
+.assistant-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 54px;
+  gap: 8px;
+}
+
+.assistant-form .action-btn {
+  min-height: 48px;
+  padding: 0;
 }
 
 .spin-panel {

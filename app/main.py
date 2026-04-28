@@ -95,6 +95,10 @@ class LanguageSelectIn(BaseModel):
         return clean
 
 
+class AssistantChatIn(BaseModel):
+    message: str = Field(min_length=1, max_length=1000)
+
+
 class SupportSettingsIn(BaseModel):
     display_name: str = Field(default="Store Support", min_length=1, max_length=120)
     telegram_username: str = Field(default="", max_length=120)
@@ -109,6 +113,12 @@ class SupportSettingsIn(BaseModel):
         if clean and not clean.lstrip("-").isdigit():
             raise ValueError("Telegram user ID must be numeric.")
         return clean
+
+
+class AiAssistantSettingsIn(BaseModel):
+    intro: str = Field(default="Ask me anything about this Mini App.", min_length=1, max_length=300)
+    custom_knowledge: str = Field(default="", max_length=5000)
+    enabled: bool = True
 
 
 class ProductIn(BaseModel):
@@ -258,6 +268,12 @@ RESELLER_SETTING_DEFAULTS = {
     "reseller_enabled": "true",
 }
 
+AI_ASSISTANT_SETTING_DEFAULTS = {
+    "ai_assistant_intro": "Ask me anything about wallet, payment, orders, products, spin, referral, support, reseller, currency, and account settings.",
+    "ai_assistant_custom_knowledge": "",
+    "ai_assistant_enabled": "true",
+}
+
 
 def normalize_telegram_username(value: str) -> str:
     clean = value.strip()
@@ -305,6 +321,19 @@ async def fetch_reseller_settings(conn: asyncpg.Connection) -> dict[str, Any]:
     return await fetch_contact_settings(conn, RESELLER_SETTING_DEFAULTS, "reseller", "Reseller Manager")
 
 
+async def fetch_ai_assistant_settings(conn: asyncpg.Connection) -> dict[str, Any]:
+    rows = await conn.fetch(
+        "select key, value from app_settings where key = any($1::text[])",
+        list(AI_ASSISTANT_SETTING_DEFAULTS.keys()),
+    )
+    values = AI_ASSISTANT_SETTING_DEFAULTS | {row["key"]: row["value"] for row in rows}
+    return {
+        "intro": values["ai_assistant_intro"].strip() or AI_ASSISTANT_SETTING_DEFAULTS["ai_assistant_intro"],
+        "custom_knowledge": values["ai_assistant_custom_knowledge"].strip(),
+        "enabled": values["ai_assistant_enabled"].lower() == "true",
+    }
+
+
 async def save_app_settings(conn: asyncpg.Connection, payload: dict[str, str]) -> None:
     for key, value in payload.items():
         await conn.execute(
@@ -322,6 +351,134 @@ async def save_app_settings(conn: asyncpg.Connection, payload: dict[str, str]) -
 
 async def ensure_user_preferences_runtime_schema(conn: asyncpg.Connection) -> None:
     await conn.execute("alter table users add column if not exists selected_language text not null default 'en'")
+
+
+def assistant_money(value: Any, currency: asyncpg.Record | None) -> str:
+    code = currency["code"] if currency else "USD"
+    symbol = currency["symbol"] if currency else "$"
+    rate = Decimal(str(currency["rate_from_base"] if currency else 1))
+    amount = (Decimal(str(value or 0)) * rate).quantize(Decimal("0.01"))
+    return f"{symbol} {amount} {code}"
+
+
+def contains_any(message: str, words: tuple[str, ...]) -> bool:
+    lower = message.lower()
+    return any(word.lower() in lower for word in words)
+
+
+def mini_app_assistant_answer(
+    message: str,
+    *,
+    user: asyncpg.Record,
+    currency: asyncpg.Record | None,
+    stats: asyncpg.Record,
+    payments: list[asyncpg.Record],
+    orders: list[asyncpg.Record],
+    methods: list[asyncpg.Record],
+    categories: list[asyncpg.Record],
+    products: list[asyncpg.Record],
+    support: dict[str, Any],
+    reseller: dict[str, Any],
+    ai_settings: dict[str, Any],
+) -> tuple[str, list[str]]:
+    custom = ai_settings.get("custom_knowledge") or ""
+    method_names = ", ".join(method["name"] for method in methods) or "No active payment method set"
+    category_names = ", ".join(category["name"] for category in categories[:8]) or "No active section yet"
+    product_names = ", ".join(product["name"] for product in products[:6]) or "No active product yet"
+    latest_order = orders[0] if orders else None
+    latest_payment = payments[0] if payments else None
+    pending_payments = sum(1 for payment in payments if payment["status"] == "pending")
+    pending_orders = sum(1 for order in orders if order["status"] == "pending")
+    wallet = assistant_money(user["wallet_balance"], currency)
+    support_contact = (
+        f"@{support['telegram_username']}"
+        if support.get("telegram_username")
+        else f"ID {support['telegram_user_id']}" if support.get("telegram_user_id") else "not set"
+    )
+    reseller_contact = (
+        f"@{reseller['telegram_username']}"
+        if reseller.get("telegram_username")
+        else f"ID {reseller['telegram_user_id']}" if reseller.get("telegram_user_id") else "not set"
+    )
+    suggestions = ["Add fund কিভাবে করব?", "আমার অর্ডার কোথায়?", "Daily spin কখন পাব?", "Support কোথায়?"]
+
+    if contains_any(message, ("balance", "wallet", "ব্যালেন্স", "ওয়ালেট", "ওয়ালেট")):
+        return (
+            f"আপনার বর্তমান wallet balance {wallet}. Account থেকে Add Fund করলে payment request admin approve করার পর balance যোগ হবে. History tab-এ শুধু transaction history দেখা যাবে.",
+            suggestions,
+        )
+    if contains_any(message, ("payment", "pay", "fund", "add money", "add fund", "পেমেন্ট", "ফান্ড", "টাকা", "বিকাশ", "নগদ")):
+        detail = f"Active payment methods: {method_names}."
+        if latest_payment:
+            detail += f" আপনার শেষ payment request {assistant_money(latest_payment['amount'], currency)} - status {latest_payment['status']}."
+        if pending_payments:
+            detail += f" Pending payment আছে {pending_payments}টি."
+        return (
+            f"Account section-এর Add Fund অংশে amount, payment method, transaction ID এবং screenshot submit করবেন. {detail} Manual payment admin approve করলে balance add হবে; auto payment method হলে webhook confirm করতে পারে.",
+            ["Payment pending কেন?", "Transaction ID কোথায় দেব?", "Payment method কী কী?"],
+        )
+    if contains_any(message, ("order", "invoice", "delivery", "key", "অর্ডার", "ইনভয়েস", "ডেলিভারি", "কি", "চাবি")):
+        detail = f"মোট order {stats['total_orders'] or 0}, active subscription {stats['active_subscriptions'] or 0}."
+        if latest_order:
+            detail += f" Latest order {latest_order['invoice_id']} - {latest_order['product_name'] or 'Product'} - status {latest_order['status']}."
+        if pending_orders:
+            detail += f" Pending order আছে {pending_orders}টি."
+        return (
+            f"Orders tab-এ শুধু order history থাকবে. {detail} Admin approve/deliver করলে delivery key/file/link order card-এ দেখাবে.",
+            ["Order status কী?", "Delivery key কোথায়?", "Wallet Pay কিভাবে?"],
+        )
+    if contains_any(message, ("product", "category", "section", "পণ্য", "প্রোডাক্ট", "ক্যাটাগরি", "সেকশন", "প্যানেল")):
+        return (
+            f"Shop tab-এ section/category দেখা যাবে. Current sections: {category_names}. Recent products: {product_names}. Product details থেকে 1 Day, 7 Days, 30 Days duration বেছে order করা যাবে.",
+            ["Android section কোথায়?", "Duration কীভাবে বাছব?", "Stock status কী?"],
+        )
+    if contains_any(message, ("spin", "lucky", "bonus", "স্পিন", "বোনাস", "লাকি")):
+        next_spin = dict(user).get("next_spin_at")
+        next_text = f" Next spin time: {next_spin}." if next_spin else " Spin available থাকলে Daily Spin খুলে spin করতে পারবেন."
+        return (
+            f"Daily Spin Account section থেকে খুলবেন. প্রত্যেক user 24 ঘণ্টায় একবার spin করতে পারে, সর্বোচ্চ bonus 0.50 wallet credit.{next_text}",
+            ["Spin কাজ করছে না", "Bonus কত?", "Next spin কখন?"],
+        )
+    if contains_any(message, ("referral", "refer", "রেফার", "রেফারেল")):
+        return (
+            "Account section থেকে Referral খুলে আপনার referral link copy করবেন. নতুন user সেই link দিয়ে join করলে referral bonus wallet transaction হিসেবে যোগ হবে.",
+            ["Referral link কোথায়?", "Bonus কখন পাব?", "Referral history কোথায়?"],
+        )
+    if contains_any(message, ("coupon", "promo", "discount", "কুপন", "প্রোমো", "ডিসকাউন্ট")):
+        return (
+            "Account section থেকে Promo Code খুলে product ও duration select করে coupon check করবেন. Coupon percent বা fixed discount হতে পারে এবং expiry/max usage admin set করে.",
+            ["Coupon কাজ করছে না", "Discount কত?", "Expiry date কী?"],
+        )
+    if contains_any(message, ("support", "ticket", "help", "সাপোর্ট", "টিকেট", "হেল্প")):
+        return (
+            f"Account section-এর Support থেকে Telegram inbox বা ticket খুলতে পারবেন. Current support contact: {support_contact}. Ticket করলে admin reply app-এর ভিতরেই দেখা যাবে.",
+            ["Support inbox খুলছে না", "Ticket reply কোথায়?", "Admin contact কী?"],
+        )
+    if contains_any(message, ("reseller", "seller", "রিসেলার", "রিসেলর")):
+        return (
+            f"Account section-এর Apply for Reseller button reseller Telegram inbox খুলবে. Current reseller contact: {reseller_contact}. Admin panel থেকে এই contact change করা যাবে.",
+            ["Apply for Reseller কোথায়?", "Reseller contact set করব কীভাবে?", "Reseller pricing কী?"],
+        )
+    if contains_any(message, ("currency", "language", "কারেন্সি", "ভাষা", "ল্যাঙ্গুয়েজ", "ল্যাঙ্গুয়েজ")):
+        return (
+            f"Account section-এ Language এবং Currency আলাদা selector আছে. Currency বদলালে price/wallet display selected currency rate অনুযায়ী দেখাবে; language preference account-এ save হবে.",
+            ["Currency কীভাবে বদলাব?", "Bangla language আছে?", "USD থেকে BDT করব কীভাবে?"],
+        )
+    if contains_any(message, ("admin", "manage", "অ্যাডমিন", "ম্যানেজ")):
+        admin_text = "আপনার account admin, তাই Account থেকে Admin Panel খুলতে পারবেন." if user["is_admin"] else "Admin Panel শুধু configured admin Telegram ID-র জন্য দেখা যাবে."
+        return (
+            f"{admin_text} Admin panel থেকে product, section, key store, payment method, orders, users, coupons, support/reseller, AI knowledge, tickets এবং broadcast manage করা যায়.",
+            ["Admin ID কোথায় দেব?", "Product key upload", "Payment approve"],
+        )
+    if custom:
+        return (
+            f"Mini App knowledge note: {custom[:900]}\n\nআরও নির্দিষ্ট করে wallet, payment, order, product, spin, referral, support, reseller, currency বা admin নিয়ে প্রশ্ন করলে আমি সরাসরি উত্তর দেব.",
+            suggestions,
+        )
+    return (
+        "আমি Mini App AI Assistant. Wallet balance, add fund/payment, order history, delivery key, product section, lucky spin, referral, coupon, support, reseller, language/currency এবং admin panel সম্পর্কে প্রশ্ন করলে উত্তর দিতে পারব.",
+        suggestions,
+    )
 
 
 async def run_schema() -> None:
@@ -926,6 +1083,7 @@ async def dashboard(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
         )
         support_settings = await fetch_support_settings(conn)
         reseller_settings = await fetch_reseller_settings(conn)
+        ai_settings = await fetch_ai_assistant_settings(conn)
     return {
         "user": jsonable(user),
         "stats": jsonable(stats),
@@ -936,6 +1094,7 @@ async def dashboard(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
         "currencies": jsonable(currencies),
         "support": jsonable(support_settings),
         "reseller": jsonable(reseller_settings),
+        "assistant": jsonable({"intro": ai_settings["intro"], "enabled": ai_settings["enabled"]}),
     }
 
 
@@ -986,6 +1145,81 @@ async def reseller_settings(user: Annotated[asyncpg.Record, Depends(current_user
     async with connection() as conn:
         reseller = await fetch_reseller_settings(conn)
     return {"reseller": jsonable(reseller)}
+
+
+@app.post("/api/assistant/chat")
+async def assistant_chat(
+    data: AssistantChatIn,
+    user: Annotated[asyncpg.Record, Depends(current_user)],
+) -> dict[str, Any]:
+    async with connection() as conn:
+        currency = await conn.fetchrow(
+            "select * from currencies where code = $1 and active = true",
+            user["selected_currency"],
+        )
+        stats = await conn.fetchrow(
+            """
+            select
+                count(*) filter (where status <> 'cancelled') as total_orders,
+                count(*) filter (
+                    where status in ('approved', 'delivered')
+                      and created_at + (duration_days || ' days')::interval >= now()
+                ) as active_subscriptions
+              from orders
+             where user_id = $1
+            """,
+            user["id"],
+        )
+        payments = await conn.fetch(
+            """
+            select p.*, m.name as method_name
+              from payments p
+              left join payment_methods m on m.id = p.method_id
+             where p.user_id = $1
+             order by p.created_at desc
+             limit 8
+            """,
+            user["id"],
+        )
+        orders = await conn.fetch(
+            """
+            select o.*, p.name as product_name
+              from orders o
+              left join products p on p.id = o.product_id
+             where o.user_id = $1
+             order by o.created_at desc
+             limit 8
+            """,
+            user["id"],
+        )
+        methods = await conn.fetch("select * from payment_methods where active = true order by sort_order, name")
+        categories = await conn.fetch(
+            "select * from categories where active = true and parent_key is null order by sort_order, name limit 8"
+        )
+        products = await conn.fetch("select * from products where active = true order by created_at desc limit 6")
+        support = await fetch_support_settings(conn)
+        reseller = await fetch_reseller_settings(conn)
+        ai_settings = await fetch_ai_assistant_settings(conn)
+    if not ai_settings["enabled"]:
+        return {
+            "reply": "AI Assistant এখন admin panel থেকে inactive করা আছে.",
+            "suggestions": ["Support কোথায়?", "Payment pending কেন?"],
+        }
+    reply, suggestions = mini_app_assistant_answer(
+        data.message.strip(),
+        user=user,
+        currency=currency,
+        stats=stats,
+        payments=list(payments),
+        orders=list(orders),
+        methods=list(methods),
+        categories=list(categories),
+        products=list(products),
+        support=support,
+        reseller=reseller,
+        ai_settings=ai_settings,
+    )
+    return {"reply": reply, "suggestions": suggestions}
 
 
 @app.get("/api/currencies")
@@ -2273,7 +2507,8 @@ async def admin_support_settings(admin: Annotated[asyncpg.Record, Depends(admin_
     async with connection() as conn:
         support = await fetch_support_settings(conn)
         reseller = await fetch_reseller_settings(conn)
-    return {"support": jsonable(support), "reseller": jsonable(reseller)}
+        assistant = await fetch_ai_assistant_settings(conn)
+    return {"support": jsonable(support), "reseller": jsonable(reseller), "assistant": jsonable(assistant)}
 
 
 @app.post("/api/admin/support-settings")
@@ -2293,7 +2528,8 @@ async def admin_update_support_settings(
             await save_app_settings(conn, payload)
             support = await fetch_support_settings(conn)
             reseller = await fetch_reseller_settings(conn)
-    return {"support": jsonable(support), "reseller": jsonable(reseller)}
+            assistant = await fetch_ai_assistant_settings(conn)
+    return {"support": jsonable(support), "reseller": jsonable(reseller), "assistant": jsonable(assistant)}
 
 
 @app.post("/api/admin/reseller-settings")
@@ -2313,7 +2549,27 @@ async def admin_update_reseller_settings(
             await save_app_settings(conn, payload)
             support = await fetch_support_settings(conn)
             reseller = await fetch_reseller_settings(conn)
-    return {"support": jsonable(support), "reseller": jsonable(reseller)}
+            assistant = await fetch_ai_assistant_settings(conn)
+    return {"support": jsonable(support), "reseller": jsonable(reseller), "assistant": jsonable(assistant)}
+
+
+@app.post("/api/admin/assistant-settings")
+async def admin_update_assistant_settings(
+    data: AiAssistantSettingsIn,
+    admin: Annotated[asyncpg.Record, Depends(admin_user)],
+) -> dict[str, Any]:
+    payload = {
+        "ai_assistant_intro": data.intro.strip(),
+        "ai_assistant_custom_knowledge": data.custom_knowledge.strip(),
+        "ai_assistant_enabled": "true" if data.enabled else "false",
+    }
+    async with connection() as conn:
+        async with conn.transaction():
+            await save_app_settings(conn, payload)
+            support = await fetch_support_settings(conn)
+            reseller = await fetch_reseller_settings(conn)
+            assistant = await fetch_ai_assistant_settings(conn)
+    return {"support": jsonable(support), "reseller": jsonable(reseller), "assistant": jsonable(assistant)}
 
 
 @app.get("/api/admin/tickets")
