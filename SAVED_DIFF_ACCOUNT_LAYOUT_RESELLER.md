@@ -56,6 +56,13 @@ This file saves the latest change set in plain text because Git is not available
 - It uses live app data and admin custom knowledge, without requiring an external AI API key.
 - Assistant suggestion buttons now send the question directly.
 - Assistant errors are shown inside the chat instead of silently failing.
+- Assistant has built-in general Mini App answers even when admin custom knowledge is empty.
+- Admin custom knowledge can still match customer questions and return the closest saved answer.
+
+## Close App Button
+
+- Added bottom `Close App` button to Account and AI Assistant screens.
+- In Telegram Mini App it calls `Telegram.WebApp.close()`.
 
 ## Database Changes
 
@@ -82,6 +89,18 @@ This file saves the latest change set in plain text because Git is not available
 ## Uptime Monitor Fix
 
 - Added `HEAD /` and `HEAD /{path}` responses so root URL monitors do not produce `405 Method Not Allowed`.
+
+## Payment Method Logo And Status
+
+- Added `payment_methods.logo_url`.
+- Admin can add a custom payment method with logo URL or logo upload.
+- User-side Add Fund only shows payment methods where admin status is active/on.
+
+## AI Assistant Server Error Fix
+
+- Fixed `/api/assistant/chat` payment history query to read from `payment_requests`.
+- This prevents `500 Internal Server Error` caused by querying a non-existent `payments` table.
+- Made `/api/assistant/chat` fail-safe so table/column mismatch returns a basic assistant reply instead of `500 Internal Server Error`.
 
 ## Render Start Command
 

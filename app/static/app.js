@@ -109,6 +109,13 @@ function productImage(url, label, className = "product-image") {
   return `<div class="${className}">${initials(label)}</div>`;
 }
 
+function paymentMethodMark(method) {
+  if (method?.logo_url) {
+    return `<img class="payment-logo" src="${escapeHtml(method.logo_url)}" alt="${escapeHtml(method.name)}" />`;
+  }
+  return `<span class="inline-icon">${icon(method?.method_type === "auto" ? "badge-check" : "scan-line")}</span>`;
+}
+
 function statusBadge(status) {
   const map = {
     approved: "success",
@@ -593,7 +600,7 @@ function renderCheckout() {
       <div class="table-lite">
         ${state.methods.map((method) => `
           <button class="payment-option ${String(method.id) === String(state.selectedPaymentMethodId) ? "active" : ""}" data-action="select-payment-method" data-id="${method.id}" type="button">
-            <span class="inline-icon">${icon(method.method_type === "auto" ? "badge-check" : "scan-line")}</span>
+            ${paymentMethodMark(method)}
             <span>
               <strong>${escapeHtml(method.name)}</strong>
               <small>${escapeHtml(method.account_label || "Details")}: ${escapeHtml(method.account_value || method.instructions || "")}</small>
@@ -639,7 +646,7 @@ function renderPaymentForm() {
       <div class="payment-method-grid">
         ${state.methods.map((method) => `
           <button class="payment-option ${String(method.id) === String(selected.id) ? "active" : ""}" data-action="select-payment-method" data-id="${method.id}" type="button">
-            <span class="inline-icon">${icon(method.method_type === "auto" ? "badge-check" : "scan-line")}</span>
+            ${paymentMethodMark(method)}
             <span>
               <strong>${escapeHtml(method.name)}</strong>
               <small>${escapeHtml(method.account_label || "Details")}: ${escapeHtml(method.account_value || method.instructions || "Tap to view")}</small>
@@ -879,6 +886,9 @@ function renderAssistant() {
         <button class="action-btn" type="submit" ${state.aiBusy ? "disabled" : ""}>${icon("send")}</button>
       </form>
     </section>
+    <section class="close-app-section">
+      <button class="action-btn secondary close-app-btn" data-action="close-app" type="button">${icon("x")} Close App</button>
+    </section>
   `;
 }
 
@@ -961,6 +971,9 @@ function renderProfile() {
       </div>
       <button class="action-btn secondary" type="submit">${icon("coins")} Save Currency</button>
     </form>
+    <section class="close-app-section">
+      <button class="action-btn secondary close-app-btn" data-action="close-app" type="button">${icon("x")} Close App</button>
+    </section>
   `;
 }
 
@@ -1222,6 +1235,10 @@ function renderAdminPayments() {
         <div class="field"><label>Value</label><input name="account_value" value="${escapeHtml(edit?.account_value || "")}" /></div>
       </div>
       <div class="field"><label>Instructions</label><textarea name="instructions">${escapeHtml(edit?.instructions || "")}</textarea></div>
+      <div class="two-col">
+        <div class="field"><label>Logo URL</label><input name="logo_url" value="${escapeHtml(edit?.logo_url || "")}" /></div>
+        <div class="field"><label>Logo Upload</label><input name="logo_file" type="file" accept="image/*" /></div>
+      </div>
       <div class="field"><label>QR image URL</label><input name="qr_image_url" value="${escapeHtml(edit?.qr_image_url || "")}" /></div>
       <div class="two-col">
         <div class="field"><label>Sort</label><input name="sort_order" type="number" value="${escapeHtml(edit?.sort_order ?? 0)}" /></div>
@@ -1234,7 +1251,7 @@ function renderAdminPayments() {
     <section class="table-lite">
       ${methods.map((method) => `
         <article class="admin-row">
-          <div class="status-row"><h4>${escapeHtml(method.name)}</h4>${method.active ? `<span class="badge success">Active</span>` : `<span class="badge danger">Off</span>`}</div>
+          <div class="status-row"><h4>${method.logo_url ? `<img class="payment-logo tiny" src="${escapeHtml(method.logo_url)}" alt="${escapeHtml(method.name)}" />` : ""}${escapeHtml(method.name)}</h4>${method.active ? `<span class="badge success">Active</span>` : `<span class="badge danger">Off</span>`}</div>
           <div class="muted">${escapeHtml(method.account_label || "Details")}: ${escapeHtml(method.account_value || "-")}</div>
           <div class="two-col">
             <button class="action-btn secondary" data-action="edit-payment-method" data-id="${method.id}" type="button">${icon("pencil")} Edit</button>
@@ -1655,6 +1672,15 @@ document.addEventListener("click", async (event) => {
         window.location.href = url;
       }
     }
+    if (action === "close-app") {
+      if (tg?.close) {
+        tg.close();
+      } else if (window.history.length > 1) {
+        window.history.back();
+      } else {
+        toast("Close this browser tab to exit");
+      }
+    }
     if (action === "admin-tab") {
       await loadAdminData(button.dataset.tab);
       render();
@@ -1985,12 +2011,14 @@ document.addEventListener("submit", async (event) => {
     if (form.id === "admin-payment-method-form") {
       event.preventDefault();
       const data = new FormData(form);
+      const logoFromFile = await fileToDataUrl(data.get("logo_file"));
       const payload = {
         name: data.get("name"),
         instructions: data.get("instructions") || "",
         method_type: data.get("method_type"),
         account_label: data.get("account_label") || "",
         account_value: data.get("account_value") || "",
+        logo_url: logoFromFile || data.get("logo_url") || "",
         qr_image_url: data.get("qr_image_url") || "",
         active: data.get("active") === "true",
         sort_order: Number(data.get("sort_order") || 0),

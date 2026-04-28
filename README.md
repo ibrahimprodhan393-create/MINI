@@ -16,6 +16,10 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 - Add Fund shows admin payment methods as selectable cards, opens payment address/details with copy button, then submits amount and screenshot
 - Account screen uses compact action rows for Add Fund, AI Assistant, Daily Spin, Language, Referral, Promo Code, Support, Profile/Currency, and Reseller
 - AI Assistant chat answers Mini App questions about wallet, payment, orders, products, spin, referral, support, reseller, currency, language, and admin usage
+- AI Assistant reads payment history from `payment_requests`, the same table used by wallet payment submissions
+- AI Assistant has a safe fallback answer if optional history queries fail on an older database
+- AI Assistant has built-in answers even without custom knowledge; admin custom knowledge can still override or extend answers
+- Account and AI Assistant screens include a bottom Close App button for Telegram Mini App exit
 - History screen contains only wallet/transaction history, and Orders screen contains only order history
 - Admin users: add balance or remove balance from any user
 - Checkout payment flow: Wallet Pay auto-deducts; manual payment approval can auto-create the order
@@ -24,6 +28,7 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 - Automatic delivery: if a stored key is available, paid orders are delivered instantly
 - Automatic delivery picks the stored key from the matching 1/7/30 day bucket
 - Admin payment method editor: name, instructions, account details, QR image, active/off
+- Payment methods support custom names, active/off status, logo upload/URL, QR image, and user-side display only when active
 - Orders: invoice ID, pending, approved, delivered, cancelled, refund on cancel
 - Referral link and bonus wallet credit for new user joins
 - Coupons: percent or fixed discount, expiry, max usage

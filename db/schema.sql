@@ -79,6 +79,7 @@ create table if not exists payment_methods (
     method_type text not null default 'manual',
     account_label text not null default '',
     account_value text not null default '',
+    logo_url text not null default '',
     qr_image_url text not null default '',
     active boolean not null default true,
     sort_order int not null default 0
@@ -87,6 +88,7 @@ create table if not exists payment_methods (
 alter table payment_methods add column if not exists method_type text not null default 'manual';
 alter table payment_methods add column if not exists account_label text not null default '';
 alter table payment_methods add column if not exists account_value text not null default '';
+alter table payment_methods add column if not exists logo_url text not null default '';
 alter table payment_methods add column if not exists qr_image_url text not null default '';
 
 create table if not exists payment_requests (

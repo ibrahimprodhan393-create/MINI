@@ -355,6 +355,23 @@ main {
   height: 20px;
 }
 
+.payment-logo {
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  background: #101118;
+}
+
+.payment-logo.tiny {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
 .account-row-text {
   display: grid;
   gap: 4px;
@@ -381,6 +398,16 @@ main {
 
 .reseller-row {
   border-color: rgba(255, 193, 7, 0.35);
+}
+
+.close-app-section {
+  margin: 14px 0 0;
+  padding-bottom: 8px;
+}
+
+.close-app-btn {
+  min-height: 54px;
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
 .notice-stack {

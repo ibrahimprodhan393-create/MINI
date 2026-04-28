@@ -166,6 +166,7 @@ class PaymentMethodIn(BaseModel):
     method_type: str = "manual"
     account_label: str = ""
     account_value: str = ""
+    logo_url: str = ""
     qr_image_url: str = ""
     active: bool = True
     sort_order: int = 0
@@ -353,6 +354,10 @@ async def ensure_user_preferences_runtime_schema(conn: asyncpg.Connection) -> No
     await conn.execute("alter table users add column if not exists selected_language text not null default 'en'")
 
 
+async def ensure_payment_method_runtime_schema(conn: asyncpg.Connection) -> None:
+    await conn.execute("alter table payment_methods add column if not exists logo_url text not null default ''")
+
+
 def assistant_money(value: Any, currency: asyncpg.Record | None) -> str:
     code = currency["code"] if currency else "USD"
     symbol = currency["symbol"] if currency else "$"
@@ -364,6 +369,46 @@ def assistant_money(value: Any, currency: asyncpg.Record | None) -> str:
 def contains_any(message: str, words: tuple[str, ...]) -> bool:
     lower = message.lower()
     return any(word.lower() in lower for word in words)
+
+
+def tokenize_question(value: str) -> set[str]:
+    clean = "".join(ch.lower() if ch.isalnum() else " " for ch in value)
+    return {token for token in clean.split() if len(token) >= 2}
+
+
+def custom_knowledge_answer(message: str, custom: str) -> str | None:
+    if not custom.strip():
+        return None
+    question_tokens = tokenize_question(message)
+    blocks = [block.strip() for block in custom.replace("\r\n", "\n").split("\n\n") if block.strip()]
+    best_score = 0
+    best_block = ""
+    for block in blocks:
+        head, _, body = block.partition("\n")
+        haystack = f"{head} {body or block}"
+        score = len(question_tokens & tokenize_question(haystack))
+        if score > best_score:
+            best_score = score
+            best_block = block
+    if best_score >= 2:
+        return best_block[:1400]
+    if len(blocks) == 1:
+        return blocks[0][:1400]
+    return None
+
+
+def built_in_general_answer(message: str) -> tuple[str, list[str]]:
+    lower = message.lower()
+    if "how are you" in lower or "তুমি কেমন" in message:
+        return ("আমি ভালো আছি। আপনার Mini App, payment, order, wallet, reseller, support বা admin setup নিয়ে যেকোনো প্রশ্ন করতে পারেন।", ["Add Fund", "Order status", "Support"])
+    if "hello" in lower or "hi" in lower or "হ্যালো" in message or "সালাম" in message:
+        return ("হ্যালো! আমি আপনার Mini App Assistant. কী জানতে চান?", ["Payment method", "Order history", "Daily spin"])
+    if "thank" in lower or "ধন্যবাদ" in message:
+        return ("স্বাগতম। আর কোনো প্রশ্ন থাকলে লিখুন, আমি সাহায্য করব।", ["Add Fund", "Referral", "Currency"])
+    return (
+        "আমি আপনার Mini App Assistant. এই app-এর সব common বিষয় নিয়ে উত্তর দিতে পারি: Add Fund, payment method, screenshot submit, order status, delivery key, product section, coupon, referral, daily spin, support, reseller, profile, currency, language এবং admin panel. আপনার প্রশ্নটা একটু নির্দিষ্ট করে লিখলে আমি সরাসরি উত্তর দেব।",
+        ["Add Fund কীভাবে?", "Order status", "Payment method", "Support কোথায়?"],
+    )
 
 
 def mini_app_assistant_answer(
@@ -401,6 +446,10 @@ def mini_app_assistant_answer(
         else f"ID {reseller['telegram_user_id']}" if reseller.get("telegram_user_id") else "not set"
     )
     suggestions = ["Add fund কিভাবে করব?", "আমার অর্ডার কোথায়?", "Daily spin কখন পাব?", "Support কোথায়?"]
+
+    custom_answer = custom_knowledge_answer(message, custom)
+    if custom_answer:
+        return (custom_answer, suggestions)
 
     if contains_any(message, ("balance", "wallet", "ব্যালেন্স", "ওয়ালেট", "ওয়ালেট")):
         return (
@@ -478,15 +527,7 @@ def mini_app_assistant_answer(
             f"{admin_text} Admin panel থেকে product, section, key store, payment method, orders, users, coupons, support/reseller, AI knowledge, tickets এবং broadcast manage করা যায়.",
             ["Admin ID কোথায় দেব?", "Product key upload", "Payment approve"],
         )
-    if custom:
-        return (
-            f"Mini App knowledge note: {custom[:900]}\n\nআরও নির্দিষ্ট করে wallet, payment, order, product, spin, referral, support, reseller, currency বা admin নিয়ে প্রশ্ন করলে আমি সরাসরি উত্তর দেব.",
-            suggestions,
-        )
-    return (
-        "আমি Mini App AI Assistant. Wallet balance, add fund/payment, order history, delivery key, product section, lucky spin, referral, coupon, support, reseller, language/currency এবং admin panel সম্পর্কে প্রশ্ন করলে উত্তর দিতে পারব.",
-        suggestions,
-    )
+    return built_in_general_answer(message)
 
 
 async def run_schema() -> None:
@@ -1135,6 +1176,7 @@ async def categories(
 @app.get("/api/payment-methods")
 async def payment_methods(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dict[str, Any]:
     async with connection() as conn:
+        await ensure_payment_method_runtime_schema(conn)
         rows = await conn.fetch(
             "select * from payment_methods where active = true order by sort_order, name"
         )
@@ -1160,73 +1202,149 @@ async def assistant_chat(
     data: AssistantChatIn,
     user: Annotated[asyncpg.Record, Depends(current_user)],
 ) -> dict[str, Any]:
+    currency = None
+    stats: dict[str, Any] | asyncpg.Record = {"total_orders": 0, "active_subscriptions": 0}
+    payments: list[Any] = []
+    orders: list[Any] = []
+    methods: list[Any] = []
+    categories: list[Any] = []
+    products: list[Any] = []
+    support: dict[str, Any] = {
+        "telegram_username": "",
+        "telegram_user_id": "",
+        "display_name": "Store Support",
+        "note": "Tap to open Telegram inbox for help.",
+        "enabled": True,
+    }
+    reseller: dict[str, Any] = {
+        "telegram_username": "",
+        "telegram_user_id": "",
+        "display_name": "Reseller Manager",
+        "note": "Apply for reseller pricing through Telegram.",
+        "enabled": True,
+    }
+    ai_settings: dict[str, Any] = {
+        "intro": AI_ASSISTANT_SETTING_DEFAULTS["ai_assistant_intro"],
+        "custom_knowledge": "",
+        "enabled": True,
+    }
     async with connection() as conn:
-        currency = await conn.fetchrow(
-            "select * from currencies where code = $1 and active = true",
-            user["selected_currency"],
-        )
-        stats = await conn.fetchrow(
-            """
-            select
-                count(*) filter (where status <> 'cancelled') as total_orders,
-                count(*) filter (
-                    where status in ('approved', 'delivered')
-                      and created_at + (duration_days || ' days')::interval >= now()
-                ) as active_subscriptions
-              from orders
-             where user_id = $1
-            """,
-            user["id"],
-        )
-        payments = await conn.fetch(
-            """
-            select p.*, m.name as method_name
-              from payments p
-              left join payment_methods m on m.id = p.method_id
-             where p.user_id = $1
-             order by p.created_at desc
-             limit 8
-            """,
-            user["id"],
-        )
-        orders = await conn.fetch(
-            """
-            select o.*, p.name as product_name
-              from orders o
-              left join products p on p.id = o.product_id
-             where o.user_id = $1
-             order by o.created_at desc
-             limit 8
-            """,
-            user["id"],
-        )
-        methods = await conn.fetch("select * from payment_methods where active = true order by sort_order, name")
-        categories = await conn.fetch(
-            "select * from categories where active = true and parent_key is null order by sort_order, name limit 8"
-        )
-        products = await conn.fetch("select * from products where active = true order by created_at desc limit 6")
-        support = await fetch_support_settings(conn)
-        reseller = await fetch_reseller_settings(conn)
-        ai_settings = await fetch_ai_assistant_settings(conn)
+        try:
+            currency = await conn.fetchrow(
+                "select * from currencies where code = $1 and active = true",
+                user["selected_currency"],
+            )
+        except Exception:
+            currency = None
+        try:
+            row = await conn.fetchrow(
+                """
+                select
+                    count(*) filter (where status <> 'cancelled') as total_orders,
+                    count(*) filter (
+                        where status in ('approved', 'delivered')
+                          and created_at + (duration_days || ' days')::interval >= now()
+                    ) as active_subscriptions
+                  from orders
+                 where user_id = $1
+                """,
+                user["id"],
+            )
+            stats = row or stats
+        except Exception:
+            pass
+        try:
+            payments = list(await conn.fetch(
+                """
+                select p.id,
+                       p.user_id,
+                       p.amount,
+                       p.method_id,
+                       coalesce(nullif(p.method_name, ''), m.name, 'Payment') as method_name,
+                       p.transaction_id,
+                       p.screenshot_data,
+                       p.status,
+                       p.rejection_reason,
+                       p.reviewed_at,
+                       p.created_at
+                  from payment_requests p
+                  left join payment_methods m on m.id = p.method_id
+                 where p.user_id = $1
+                 order by p.created_at desc
+                 limit 8
+                """,
+                user["id"],
+            ))
+        except Exception:
+            payments = []
+        try:
+            orders = list(await conn.fetch(
+                """
+                select o.*, coalesce(p.name, 'Product') as product_name
+                  from orders o
+                  left join products p on p.id = o.product_id
+                 where o.user_id = $1
+                 order by o.created_at desc
+                 limit 8
+                """,
+                user["id"],
+            ))
+        except Exception:
+            orders = []
+        try:
+            await ensure_payment_method_runtime_schema(conn)
+            methods = list(await conn.fetch("select * from payment_methods where active = true order by sort_order, name"))
+        except Exception:
+            methods = []
+        try:
+            categories = list(await conn.fetch(
+                "select * from categories where active = true and parent_key is null order by sort_order, name limit 8"
+            ))
+        except Exception:
+            categories = []
+        try:
+            products = list(await conn.fetch("select * from products where active = true order by created_at desc limit 6"))
+        except Exception:
+            products = []
+        try:
+            support = await fetch_support_settings(conn)
+        except Exception:
+            pass
+        try:
+            reseller = await fetch_reseller_settings(conn)
+        except Exception:
+            pass
+        try:
+            ai_settings = await fetch_ai_assistant_settings(conn)
+        except Exception:
+            pass
     if not ai_settings["enabled"]:
         return {
             "reply": "AI Assistant এখন admin panel থেকে inactive করা আছে.",
             "suggestions": ["Support কোথায়?", "Payment pending কেন?"],
         }
-    reply, suggestions = mini_app_assistant_answer(
-        data.message.strip(),
-        user=user,
-        currency=currency,
-        stats=stats,
-        payments=list(payments),
-        orders=list(orders),
-        methods=list(methods),
-        categories=list(categories),
-        products=list(products),
-        support=support,
-        reseller=reseller,
-        ai_settings=ai_settings,
-    )
+    try:
+        reply, suggestions = mini_app_assistant_answer(
+            data.message.strip(),
+            user=user,
+            currency=currency,
+            stats=stats,
+            payments=list(payments),
+            orders=list(orders),
+            methods=list(methods),
+            categories=list(categories),
+            products=list(products),
+            support=support,
+            reseller=reseller,
+            ai_settings=ai_settings,
+        )
+    except Exception:
+        reply = (
+            "AI Assistant এখন basic mode-এ উত্তর দিচ্ছে. Add Fund করতে Account > Add Fund খুলে payment method select করুন, "
+            "address copy করুন, amount এবং screenshot upload করে Submit Payment চাপুন. Orders tab-এ order history, "
+            "History tab-এ transaction history দেখা যাবে."
+        )
+        suggestions = ["Add Fund", "Order status", "Support কোথায়?", "Daily spin"]
     return {"reply": reply, "suggestions": suggestions}
 
 
@@ -2053,6 +2171,7 @@ async def admin_payments(
     status: str | None = None,
 ) -> dict[str, Any]:
     async with connection() as conn:
+        await ensure_payment_method_runtime_schema(conn)
         rows = await conn.fetch(
             """
             select p.*, u.first_name, u.username, u.telegram_id
@@ -2070,6 +2189,7 @@ async def admin_payments(
 @app.get("/api/admin/payment-methods")
 async def admin_payment_methods(admin: Annotated[asyncpg.Record, Depends(admin_user)]) -> dict[str, Any]:
     async with connection() as conn:
+        await ensure_payment_method_runtime_schema(conn)
         rows = await conn.fetch("select * from payment_methods order by sort_order, name")
     return {"methods": jsonable(rows)}
 
@@ -2080,13 +2200,14 @@ async def admin_create_payment_method(
     admin: Annotated[asyncpg.Record, Depends(admin_user)],
 ) -> dict[str, Any]:
     async with connection() as conn:
+        await ensure_payment_method_runtime_schema(conn)
         row = await conn.fetchrow(
             """
             insert into payment_methods (
                 name, instructions, method_type, account_label,
-                account_value, qr_image_url, active, sort_order
+                account_value, logo_url, qr_image_url, active, sort_order
             )
-            values ($1, $2, $3, $4, $5, $6, $7, $8)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             returning *
             """,
             data.name,
@@ -2094,6 +2215,7 @@ async def admin_create_payment_method(
             data.method_type,
             data.account_label,
             data.account_value,
+            data.logo_url,
             data.qr_image_url,
             data.active,
             data.sort_order,
@@ -2108,6 +2230,7 @@ async def admin_update_payment_method(
     admin: Annotated[asyncpg.Record, Depends(admin_user)],
 ) -> dict[str, Any]:
     async with connection() as conn:
+        await ensure_payment_method_runtime_schema(conn)
         row = await conn.fetchrow(
             """
             update payment_methods
@@ -2116,9 +2239,10 @@ async def admin_update_payment_method(
                    method_type = $4,
                    account_label = $5,
                    account_value = $6,
-                   qr_image_url = $7,
-                   active = $8,
-                   sort_order = $9
+                   logo_url = $7,
+                   qr_image_url = $8,
+                   active = $9,
+                   sort_order = $10
              where id = $1
          returning *
             """,
@@ -2128,6 +2252,7 @@ async def admin_update_payment_method(
             data.method_type,
             data.account_label,
             data.account_value,
+            data.logo_url,
             data.qr_image_url,
             data.active,
             data.sort_order,

@@ -17,7 +17,7 @@ The schema creates all tables and starter data for:
 - nested sections/sub-sections
 - 1 Day, 7 Days, and 30 Days product key store for automatic delivery
 - wallet transactions and payment requests
-- editable payment methods
+- editable payment methods with active/off status, logo, QR, and account details
 - auto payment confirmation support
 - orders and invoice IDs
 - referrals and bonuses
