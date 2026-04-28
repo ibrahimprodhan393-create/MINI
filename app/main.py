@@ -397,17 +397,85 @@ def custom_knowledge_answer(message: str, custom: str) -> str | None:
     return None
 
 
+def detect_language_hint(message: str) -> str:
+    lower = message.lower()
+    if any("\u0980" <= ch <= "\u09ff" for ch in message):
+        return "bn"
+    if any("\u0600" <= ch <= "\u06ff" for ch in message):
+        return "ar"
+    if any("\u0900" <= ch <= "\u097f" for ch in message):
+        return "hi"
+    if any("\u0e00" <= ch <= "\u0e7f" for ch in message):
+        return "th"
+    if any("\u0400" <= ch <= "\u04ff" for ch in message):
+        return "ru"
+    if any(ch in lower for ch in "ğüşöçıİ"):
+        return "tr"
+    if any(word in lower for word in ("selam", "merhaba", "tesekkur", "teşekkür")):
+        return "tr"
+    if any(word in lower for word in ("terima", "kasih", "bahasa", "bayar")):
+        return "id"
+    if any(word in lower for word in ("kumusta", "salamat", "paano")):
+        return "fil"
+    return "en"
+
+
 def built_in_general_answer(message: str) -> tuple[str, list[str]]:
     lower = message.lower()
-    if "how are you" in lower or "তুমি কেমন" in message:
-        return ("আমি ভালো আছি। আপনার Mini App, payment, order, wallet, reseller, support বা admin setup নিয়ে যেকোনো প্রশ্ন করতে পারেন।", ["Add Fund", "Order status", "Support"])
+    lang = detect_language_hint(message)
+    suggestions = ["Add Fund", "Order status", "Payment method", "Support"]
+    if "how are you" in lower or "কেমন" in message:
+        replies = {
+            "bn": "আমি ভালো আছি। এই Mini App-এর payment, order, wallet, spin, referral, support, reseller, product এবং admin setup নিয়ে যেকোনো প্রশ্ন করতে পারেন।",
+            "hi": "मैं ठीक हूं। आप इस Mini App के payment, order, wallet, spin, referral, support, reseller, product और admin setup के बारे में पूछ सकते हैं।",
+            "ar": "أنا بخير. يمكنك سؤالي عن الدفع، الطلبات، المحفظة، العجلة اليومية، الإحالة، الدعم، المنتجات ولوحة الإدارة.",
+            "tr": "İyiyim. Bu Mini App icin odeme, siparis, cuzdan, spin, referans, destek, bayi, urun ve admin sorularini cevaplayabilirim.",
+            "ru": "У меня все хорошо. Я могу помочь с оплатой, заказами, кошельком, спином, рефералами, поддержкой, товарами и админ-панелью.",
+            "th": "ฉันสบายดี คุณถามได้เรื่องการชำระเงิน คำสั่งซื้อ กระเป๋าเงิน สปินรายวัน แนะนำเพื่อน ซัพพอร์ต สินค้า และแอดมิน",
+            "id": "Saya baik. Anda bisa bertanya tentang payment, order, wallet, spin, referral, support, reseller, produk, dan admin setup.",
+            "fil": "Ayos lang ako. Maaari kang magtanong tungkol sa payment, orders, wallet, spin, referral, support, reseller, products, at admin setup.",
+        }
+        return (
+            replies.get(lang, "I am good. You can ask me about this Mini App: payment, orders, wallet, daily spin, referral, support, reseller, products, currency, language, and admin setup."),
+            suggestions,
+        )
     if "hello" in lower or "hi" in lower or "হ্যালো" in message or "সালাম" in message:
-        return ("হ্যালো! আমি আপনার Mini App Assistant. কী জানতে চান?", ["Payment method", "Order history", "Daily spin"])
+        replies = {
+            "bn": "হ্যালো! আমি আপনার Mini App Assistant. কী জানতে চান?",
+            "hi": "नमस्ते! मैं आपका Mini App Assistant हूं। आप क्या जानना चाहते हैं?",
+            "ar": "مرحبا! أنا مساعد تطبيقك المصغر. ماذا تريد أن تعرف؟",
+            "tr": "Merhaba! Ben Mini App asistaniniz. Ne ogrenmek istersiniz?",
+            "ru": "Здравствуйте! Я помощник Mini App. Что хотите узнать?",
+            "th": "สวัสดี! ฉันคือผู้ช่วย Mini App คุณต้องการทราบอะไร?",
+            "id": "Halo! Saya Mini App Assistant Anda. Apa yang ingin Anda ketahui?",
+            "fil": "Hello! Ako ang iyong Mini App Assistant. Ano ang gusto mong malaman?",
+        }
+        return (replies.get(lang, "Hello! I am your Mini App Assistant. What would you like to know?"), ["Payment method", "Order history", "Daily spin"])
     if "thank" in lower or "ধন্যবাদ" in message:
-        return ("স্বাগতম। আর কোনো প্রশ্ন থাকলে লিখুন, আমি সাহায্য করব।", ["Add Fund", "Referral", "Currency"])
+        replies = {
+            "bn": "স্বাগতম। আর কোনো প্রশ্ন থাকলে লিখুন, আমি সাহায্য করব।",
+            "hi": "स्वागत है। कोई और सवाल हो तो लिखें, मैं मदद करूंगा।",
+            "ar": "على الرحب والسعة. اكتب أي سؤال آخر وسأساعدك.",
+            "tr": "Rica ederim. Baska bir sorunuz varsa yazin, yardim ederim.",
+            "ru": "Пожалуйста. Если есть еще вопрос, напишите, я помогу.",
+            "th": "ยินดีครับ หากมีคำถามเพิ่มเติมพิมพ์มาได้เลย",
+            "id": "Sama-sama. Jika ada pertanyaan lain, tulis saja.",
+            "fil": "Walang anuman. Kung may iba ka pang tanong, isulat mo lang.",
+        }
+        return (replies.get(lang, "You are welcome. Ask anything else and I will help."), ["Add Fund", "Referral", "Currency"])
+    general = {
+        "bn": "আমি আপনার Mini App Assistant. Custom text না থাকলেও আমি এই bot/app-এর Add Fund, active payment method, screenshot submit, order status, delivery key, product section, coupon, referral, daily spin, support, reseller, profile, currency, language এবং admin panel নিয়ে উত্তর দিতে পারি। আপনার প্রশ্নটি একটু নির্দিষ্ট করে লিখলে আমি সরাসরি উত্তর দেব।",
+        "hi": "मैं आपका Mini App Assistant हूं। Custom text के बिना भी मैं Add Fund, active payment method, screenshot submit, order status, delivery key, product section, coupon, referral, daily spin, support, reseller, profile, currency, language और admin panel पर मदद कर सकता हूं।",
+        "ar": "أنا مساعد Mini App. حتى بدون نص مخصص، يمكنني المساعدة في إضافة الرصيد، طرق الدفع النشطة، رفع لقطة الشاشة، حالة الطلب، مفاتيح التسليم، الأقسام، الكوبونات، الإحالة، العجلة اليومية، الدعم، البائع، الملف الشخصي، العملة، اللغة ولوحة الإدارة.",
+        "tr": "Ben Mini App asistaniniz. Ozel metin olmadan da Add Fund, aktif odeme yontemi, ekran goruntusu, siparis durumu, teslimat anahtari, urun bolumleri, kupon, referans, gunluk spin, destek, bayi, profil, para birimi, dil ve admin paneli hakkinda yardim edebilirim.",
+        "ru": "Я помощник Mini App. Даже без custom text я могу помочь с пополнением, активными методами оплаты, скриншотом, статусом заказа, ключами доставки, разделами товаров, купонами, рефералами, ежедневным спином, поддержкой, reseller, профилем, валютой, языком и админ-панелью.",
+        "th": "ฉันคือ Mini App Assistant แม้ไม่มี custom text ฉันช่วยตอบเรื่อง Add Fund, วิธีชำระเงินที่เปิดอยู่, อัปโหลดสกรีนช็อต, สถานะคำสั่งซื้อ, delivery key, หมวดสินค้า, คูปอง, referral, daily spin, support, reseller, profile, currency, language และ admin panel ได้",
+        "id": "Saya Mini App Assistant. Tanpa custom text pun saya dapat membantu tentang Add Fund, payment method aktif, screenshot submit, order status, delivery key, product section, coupon, referral, daily spin, support, reseller, profile, currency, language, dan admin panel.",
+        "fil": "Ako ang Mini App Assistant. Kahit walang custom text, makakatulong ako tungkol sa Add Fund, active payment method, screenshot submit, order status, delivery key, product section, coupon, referral, daily spin, support, reseller, profile, currency, language, at admin panel.",
+    }
     return (
-        "আমি আপনার Mini App Assistant. এই app-এর সব common বিষয় নিয়ে উত্তর দিতে পারি: Add Fund, payment method, screenshot submit, order status, delivery key, product section, coupon, referral, daily spin, support, reseller, profile, currency, language এবং admin panel. আপনার প্রশ্নটা একটু নির্দিষ্ট করে লিখলে আমি সরাসরি উত্তর দেব।",
-        ["Add Fund কীভাবে?", "Order status", "Payment method", "Support কোথায়?"],
+        general.get(lang, "I am your Mini App Assistant. Even without custom text, I can answer broad customer questions about this bot/app: Add Fund, active payment methods, screenshot submission, order status, delivery keys, product sections, coupons, referral, daily spin, support, reseller, profile, currency, language, and admin panel. Ask a more specific question and I will answer directly."),
+        ["How to add fund?", "Order status", "Payment method", "Support"],
     )
 
 

@@ -17,6 +17,8 @@ const state = {
   selectedDuration: 1,
   checkout: null,
   selectedPaymentMethodId: null,
+  selectedFundAmount: 100,
+  showFundInvoice: false,
   methods: [],
   payments: [],
   transactions: [],
@@ -61,6 +63,8 @@ const languageOptions = [
   ["tr", "Turkish"],
 ];
 
+const fundPresets = [100, 50, 25, 10];
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -74,6 +78,12 @@ function money(value) {
   const currency = state.currency || { code: "USD", symbol: "$", rate_from_base: 1 };
   const converted = Number(value || 0) * Number(currency.rate_from_base || 1);
   return `${escapeHtml(currency.symbol)} ${converted.toFixed(2)} ${escapeHtml(currency.code)}`;
+}
+
+function compactMoney(value) {
+  const currency = state.currency || { symbol: "$", rate_from_base: 1 };
+  const converted = Number(value || 0) * Number(currency.rate_from_base || 1);
+  return `${escapeHtml(currency.symbol)} ${converted.toFixed(2)}`;
 }
 
 function textMoney(value) {
@@ -114,6 +124,12 @@ function paymentMethodMark(method) {
     return `<img class="payment-logo" src="${escapeHtml(method.logo_url)}" alt="${escapeHtml(method.name)}" />`;
   }
   return `<span class="inline-icon">${icon(method?.method_type === "auto" ? "badge-check" : "scan-line")}</span>`;
+}
+
+function paymentMethodTitle(method) {
+  const name = String(method?.name || "Payment");
+  if (String(method?.method_type || "").toLowerCase() === "auto" && !/auto/i.test(name)) return `${name} (Auto)`;
+  return name;
 }
 
 function statusBadge(status) {
@@ -272,6 +288,8 @@ async function loadRouteData(route = state.route) {
     state.transactions = transactions.transactions || [];
     state.supportSettings = support.support || state.supportSettings;
     state.resellerSettings = reseller.reseller || state.resellerSettings;
+    state.referrals = await api("/api/referrals").catch(() => state.referrals);
+    state.spin = await api("/api/spin").catch(() => state.spin);
   }
   if (route === "orders") {
     const data = await api("/api/orders");
@@ -377,7 +395,7 @@ function topbar() {
       </div>
       <button class="balance-chip" data-action="set-route" data-route="profile" aria-label="Wallet balance">
         <span>Balance</span>
-        <strong>${money(user.wallet_balance)}</strong>
+        <strong>${icon("wallet")} ${icon("gem")} ${compactMoney(user.wallet_balance)}</strong>
       </button>
     </header>
   `;
@@ -389,6 +407,7 @@ function bottomNav() {
     ["orders", "Orders", "receipt-text"],
     ["wallet", "History", "history"],
     ["profile", "Account", "wallet-cards"],
+    ["assistant", "Sard", "bot"],
   ];
   return `
     <nav class="bottom-nav">
@@ -639,49 +658,103 @@ function renderWallet() {
 function renderPaymentForm() {
   const selected = state.methods.find((method) => String(method.id) === String(state.selectedPaymentMethodId)) || state.methods[0] || null;
   if (!selected) {
-    return `<section class="panel"><div class="empty">No payment methods available</div></section>`;
+    return `
+      <section class="panel add-funds-card" id="add-fund-panel">
+        <div class="card-title">
+          <span class="account-row-icon">${icon("plus-circle")}</span>
+          <div>
+            <h3>Add Funds</h3>
+            <p>No active payment methods available right now.</p>
+          </div>
+        </div>
+      </section>
+    `;
   }
+  const amount = Number(state.selectedFundAmount || fundPresets[0] || 100);
+  const payAmount = textMoney(amount);
   return `
-    <section class="panel add-fund-panel">
+    <section class="panel add-funds-card" id="add-fund-panel">
+      <div class="card-title">
+        <span class="account-row-icon">${icon("plus-circle")}</span>
+        <div>
+          <h3>Add Funds</h3>
+          <p>Top up your balance to purchase products instantly.</p>
+        </div>
+      </div>
+      <div class="fund-method-tabs">
+        ${state.methods.slice(0, 2).map((method) => `
+          <button class="fund-tab ${String(method.id) === String(selected.id) ? "active" : ""}" data-action="select-payment-method" data-id="${method.id}" type="button">
+            ${paymentMethodMark(method)}
+            <span>${escapeHtml(paymentMethodTitle(method))}</span>
+          </button>
+        `).join("")}
+      </div>
+      <p class="muted strong-line">${icon("gem")} Manual payment - select amount:</p>
+      <div class="fund-amount-grid">
+        ${fundPresets.map((preset) => `
+          <button class="fund-amount-card ${Number(amount) === Number(preset) ? "active" : ""}" data-action="start-fund-payment" data-amount="${preset}" type="button">
+            ${icon("gem")} ${preset}
+          </button>
+        `).join("")}
+      </div>
+      <button class="action-btn custom-amount-btn" data-action="custom-fund-amount" type="button">${icon("pencil")} Custom Amount</button>
+    </section>
+    ${state.showFundInvoice ? `
+    <section class="panel fund-invoice-card">
+      <div class="payment-step-title">
+        <span>${icon("smartphone")}</span>
+        <strong>Select Payment Method</strong>
+      </div>
       <div class="payment-method-grid">
         ${state.methods.map((method) => `
           <button class="payment-option ${String(method.id) === String(selected.id) ? "active" : ""}" data-action="select-payment-method" data-id="${method.id}" type="button">
             ${paymentMethodMark(method)}
             <span>
-              <strong>${escapeHtml(method.name)}</strong>
-              <small>${escapeHtml(method.account_label || "Details")}: ${escapeHtml(method.account_value || method.instructions || "Tap to view")}</small>
+              <strong>${escapeHtml(paymentMethodTitle(method))}</strong>
+              <small>${escapeHtml(method.method_type || "manual").toUpperCase()} - ${escapeHtml(method.account_label || "Details")}</small>
             </span>
+            <span class="account-chevron">${icon("chevron-right")}</span>
           </button>
         `).join("")}
       </div>
-      <div class="payment-detail-card">
-        <div>
-          <small>${escapeHtml(selected.account_label || "Payment address")}</small>
-          <strong>${escapeHtml(selected.account_value || "Address not set")}</strong>
+      <form class="payment-invoice form-grid" id="payment-form">
+        <input name="method_id" type="hidden" value="${escapeHtml(selected.id)}" />
+        <input name="amount" type="hidden" value="${escapeHtml(amount)}" />
+        <div class="invoice-notch"></div>
+        <div class="invoice-heading">Payment Invoice</div>
+        <div class="invoice-line">
+          <span>${icon("gem")} Amount</span>
+          <strong>${escapeHtml(payAmount)}</strong>
         </div>
-        <button class="icon-btn" data-action="copy-payment-address" data-value="${escapeHtml(selected.account_value || "")}" type="button" aria-label="Copy payment address">
-          ${icon("copy")}
-        </button>
-      </div>
-      ${selected.instructions ? `<div class="notice"><strong>${escapeHtml(selected.name)}</strong><p>${escapeHtml(selected.instructions)}</p></div>` : ""}
-      ${selected.qr_image_url ? `<img class="screenshot" src="${escapeHtml(selected.qr_image_url)}" alt="${escapeHtml(selected.name)} QR" />` : ""}
-    </section>
-    <form class="panel form-grid" id="payment-form">
-      <input name="method_id" type="hidden" value="${escapeHtml(selected.id)}" />
-      <div class="field">
-        <label>Amount</label>
-        <input name="amount" type="number" step="0.01" min="1" required />
-      </div>
-      <div class="field">
-        <label>Transaction ID / Note</label>
-        <input name="transaction_id" autocomplete="off" placeholder="Optional" />
-      </div>
-      <div class="field">
-        <label>Screenshot</label>
-        <input name="screenshot" type="file" accept="image/*" capture="environment" required />
-      </div>
-      <button class="action-btn" type="submit">${icon("send")} Submit Payment</button>
-    </form>
+        <div class="invoice-line">
+          <span>${icon("smartphone")} Method</span>
+          <strong>${escapeHtml(selected.name)}</strong>
+        </div>
+        <div class="payment-detail-card">
+          <div>
+            <small>${escapeHtml(selected.account_label || "Payment address")}</small>
+            <strong>${escapeHtml(selected.account_value || "Address not set")}</strong>
+          </div>
+          <button class="action-btn secondary copy-upi-btn" data-action="copy-payment-address" data-value="${escapeHtml(selected.account_value || "")}" type="button">
+            ${icon("copy")} Copy
+          </button>
+          ${selected.instructions ? `<p class="invoice-note">${escapeHtml(selected.instructions)}</p>` : ""}
+        </div>
+        ${selected.qr_image_url ? `<img class="screenshot" src="${escapeHtml(selected.qr_image_url)}" alt="${escapeHtml(selected.name)} QR" />` : ""}
+        <div class="field">
+          <label>Transaction ID / UTR</label>
+          <input name="transaction_id" autocomplete="off" placeholder="Enter UTR or reference number" />
+        </div>
+        <div class="field">
+          <label>Payment Screenshot</label>
+          <label class="upload-drop">
+            <input name="screenshot" type="file" accept="image/*" capture="environment" required />
+            <span>${icon("upload-cloud")} Click to upload screenshot</span>
+          </label>
+        </div>
+        <button class="action-btn submit-payment-btn" type="submit">${icon("check-circle")} Submit Payment (${escapeHtml(payAmount)})</button>
+      </form>
+    </section>` : ""}
   `;
 }
 
@@ -892,48 +965,59 @@ function renderAssistant() {
   `;
 }
 
-function renderProfile() {
-  const user = state.dashboard?.user || state.session?.user || {};
-  const name = userName(user);
-  const reseller = state.resellerSettings || {};
-  const resellerUrl = telegramContactUrl(reseller);
-  const selectedLanguage = user.selected_language || "en";
-  const selectedLanguageName = languageOptions.find(([code]) => code === selectedLanguage)?.[1] || "English";
+function renderSpinInline() {
+  const data = state.spin || {};
+  const prizes = data.prizes || [];
+  const canSpin = Number(data.spins_left || 0) > 0;
+  const segments = prizes.length ? prizes.slice(0, 8) : [
+    { title: "Try Again", amount: 0 },
+    { title: "0.05", amount: 0.05 },
+    { title: "0.10", amount: 0.1 },
+    { title: "0.25", amount: 0.25 },
+    { title: "0.50", amount: 0.5 },
+  ];
   return `
-    ${accountHero(user, name)}
-    <section class="account-menu">
-      ${accountActionRow("wallet-cards", "Add Fund", "Payment details, transaction ID, screenshot", "focus-add-fund")}
-      ${accountActionRow("sparkles", "AI Assistant", "Ask wallet, payment, order, spin and support questions", "set-route", "assistant", "highlight")}
-      ${accountActionRow("rotate-cw", "Daily Spinner", "One spin every 24 hours", "set-route", "spin")}
-      ${accountActionRow("languages", "Language", `Selected: ${selectedLanguageName}`, "focus-language")}
-      ${accountActionRow("share-2", "Referral", "Referral link, bonus and history", "set-route", "referral")}
-      ${accountActionRow("badge-percent", "Promo Code", "Check discount before buying", "set-route", "coupon")}
-      ${accountActionRow("headphones", "Support", "Telegram inbox and support tickets", "set-route", "support")}
-      ${accountActionRow("user-circle", "Profile & Currency", "Telegram profile and display currency", "focus-profile")}
-      <button class="account-row reseller-row" data-action="open-reseller-chat" data-url="${escapeHtml(reseller.enabled ? resellerUrl : "")}" type="button">
-        <span class="account-row-icon">${icon("handshake")}</span>
-        <span class="account-row-text">
-          <strong>Apply for Reseller</strong>
-          <small>${reseller.telegram_username ? `@${escapeHtml(reseller.telegram_username)}` : reseller.telegram_user_id ? `ID ${escapeHtml(reseller.telegram_user_id)}` : "Reseller contact not set"}</small>
-        </span>
-        <span class="account-chevron">${icon("send")}</span>
-      </button>
-      ${state.session?.is_admin ? accountActionRow("shield-check", "Admin Panel", "Manage store, orders, payments and users", "set-route", "admin", "admin-row-link") : ""}
+    <section class="panel inline-account-card spin-panel compact-spin-card" id="daily-spin-panel">
+      <div class="card-title">
+        <span class="account-row-icon">${icon("rotate-cw")}</span>
+        <div>
+          <h3>Daily Spinner</h3>
+          <p>One spin every 24 hours. Max bonus ${money(data.max_bonus ?? 0.5)}.</p>
+        </div>
+      </div>
+      <div class="spin-stage small">
+        <div class="spin-pointer"></div>
+        <div class="spin-wheel ${state.spinAnimating ? "spinning" : ""}">
+          ${segments.map((prize, index) => `
+            <span class="spin-label label-${index}">
+              <strong>${escapeHtml(prize.title)}</strong>
+              <small>${Number(prize.amount || 0) > 0 ? money(prize.amount) : "No bonus"}</small>
+            </span>
+          `).join("")}
+        </div>
+      </div>
+      <p class="muted">${canSpin ? "Spin available now" : `Next spin: ${shortDate(data.next_spin_at)}`}</p>
+      ${state.spinResult ? `
+        <div class="notice spin-result">
+          <strong>${escapeHtml(state.spinResult.title)}</strong>
+          <p>${Number(state.spinResult.amount || 0) > 0 ? `Bonus added: ${money(state.spinResult.amount)}` : "Better luck next time"}</p>
+        </div>
+      ` : ""}
+      <button class="action-btn" data-action="play-spin" type="button" ${canSpin && !state.spinAnimating ? "" : "disabled"}>${icon("rotate-cw")} ${state.spinAnimating ? "Spinning..." : "Spin Now"}</button>
     </section>
-    <div class="section-head" id="add-fund-panel"><h3>Add Fund</h3></div>
-    ${renderPaymentForm()}
-    <div class="section-head"><h3>Payment Requests</h3></div>
-    <section class="table-lite">
-      ${state.payments.length ? state.payments.map((payment) => `
-        <article class="order-card">
-          <div class="status-row"><h4>${money(payment.amount)}</h4>${statusBadge(payment.status)}</div>
-          <div class="muted">${escapeHtml(payment.method_name)} - ${escapeHtml(payment.transaction_id)}</div>
-          <div class="muted">${shortDate(payment.created_at)}</div>
-        </article>
-      `).join("") : `<div class="empty">No payment requests</div>`}
-    </section>
-    <div class="section-head" id="language-panel"><h3>Language</h3></div>
-    <form class="panel form-grid" id="language-form">
+  `;
+}
+
+function renderLanguageInline(selectedLanguage) {
+  return `
+    <form class="panel inline-account-card form-grid" id="language-form">
+      <div class="card-title">
+        <span class="account-row-icon">${icon("languages")}</span>
+        <div>
+          <h3>Language</h3>
+          <p>Select your app language.</p>
+        </div>
+      </div>
       <div class="field">
         <label>Select Language</label>
         <select name="code">
@@ -944,8 +1028,64 @@ function renderProfile() {
       </div>
       <button class="action-btn secondary" type="submit">${icon("languages")} Save Language</button>
     </form>
-    <div class="section-head" id="profile-panel"><h3>Profile</h3></div>
-    <section class="panel">
+  `;
+}
+
+function renderReferralInline() {
+  const data = state.referrals || {};
+  return `
+    <section class="panel inline-account-card form-grid">
+      <div class="card-title">
+        <span class="account-row-icon">${icon("share-2")}</span>
+        <div>
+          <h3>Referral Program</h3>
+          <p>Invite new users and earn bonus after a valid join.</p>
+        </div>
+      </div>
+      <div class="field">
+        <label>Your referral link</label>
+        <input value="${escapeHtml(data.referral_link || data.referral_code || "")}" readonly />
+      </div>
+      <button class="action-btn secondary" data-action="copy-referral" type="button">${icon("copy")} Copy Link</button>
+      ${(data.referrals || []).slice(0, 3).map((row) => `
+        <article class="mini-history-row">
+          <span>${escapeHtml(row.first_name || row.username || "New user")}</span>
+          <strong>${money(row.bonus_amount)}</strong>
+        </article>
+      `).join("")}
+    </section>
+  `;
+}
+
+function renderSupportInline() {
+  const support = state.supportSettings || {};
+  const supportUrl = supportTelegramUrl(support);
+  return `
+    <section class="panel inline-account-card support-card">
+      <div class="support-icon">${icon("headphones")}</div>
+      <div>
+        <h3>${escapeHtml(support.display_name || "Store Support")}</h3>
+        <p>${escapeHtml(support.note || "Tap to open Telegram inbox for help.")}</p>
+        <small>${support.telegram_username ? `@${escapeHtml(support.telegram_username)}` : support.telegram_user_id ? `ID ${escapeHtml(support.telegram_user_id)}` : "Support contact not set"}</small>
+      </div>
+      <button class="action-btn ${support.enabled && supportUrl ? "" : "secondary"}" data-action="open-support-chat" data-url="${escapeHtml(support.enabled ? supportUrl : "")}" type="button">
+        ${icon("send")} Open Inbox
+      </button>
+      <button class="action-btn secondary" data-action="set-route" data-route="support" type="button">${icon("message-circle-plus")} Tickets</button>
+    </section>
+  `;
+}
+
+function renderProfileInline(user, name) {
+  return `
+    <section class="panel inline-account-card" id="profile-panel">
+      <div class="card-title">
+        <span class="account-row-icon">${icon("user-circle")}</span>
+        <div>
+          <h3>My Profile</h3>
+          <p>Telegram account information.</p>
+        </div>
+      </div>
       <div class="profile-chip">
         <div class="avatar">${user.photo_url ? `<img src="${escapeHtml(user.photo_url)}" alt="${escapeHtml(name)}" />` : initials(name)}</div>
         <div>
@@ -958,7 +1098,19 @@ function renderProfile() {
         <div class="metric"><span>Join date</span><strong style="font-size:15px;">${shortDate(user.joined_at)}</strong></div>
       </div>
     </section>
-    <form class="panel form-grid" id="currency-form">
+  `;
+}
+
+function renderCurrencyInline() {
+  return `
+    <form class="panel inline-account-card form-grid" id="currency-form">
+      <div class="card-title">
+        <span class="account-row-icon">${icon("coins")}</span>
+        <div>
+          <h3>Currency Select</h3>
+          <p>Prices and balance will be shown in this currency.</p>
+        </div>
+      </div>
       <div class="field">
         <label>Preferred Currency</label>
         <select name="code">
@@ -971,6 +1123,56 @@ function renderProfile() {
       </div>
       <button class="action-btn secondary" type="submit">${icon("coins")} Save Currency</button>
     </form>
+  `;
+}
+
+function renderAssistantEntryInline() {
+  return `
+    <section class="panel inline-account-card support-card ai-entry-card">
+      <div class="support-icon">${icon("sparkles")}</div>
+      <div>
+        <h3>AI Assistant</h3>
+        <p>Ask in any language about payment, wallet, orders, products, spin, referral, reseller, support, or admin rules.</p>
+        <small>Multi-language help</small>
+      </div>
+      <button class="action-btn" data-action="set-route" data-route="assistant" type="button">${icon("bot")} Open Assistant</button>
+    </section>
+  `;
+}
+
+function renderResellerInline(reseller, resellerUrl) {
+  return `
+    <section class="panel inline-account-card support-card reseller-card">
+      <div class="support-icon">${icon("handshake")}</div>
+      <div>
+        <h3>Apply for Reseller</h3>
+        <p>${escapeHtml(reseller.note || "Become a reseller to access special pricing and features.")}</p>
+        <small>${reseller.telegram_username ? `@${escapeHtml(reseller.telegram_username)}` : reseller.telegram_user_id ? `ID ${escapeHtml(reseller.telegram_user_id)}` : "Reseller contact not set"}</small>
+      </div>
+      <button class="action-btn reseller-button" data-action="open-reseller-chat" data-url="${escapeHtml(reseller.enabled ? resellerUrl : "")}" type="button">
+        ${icon("send")} Apply for Reseller
+      </button>
+    </section>
+  `;
+}
+
+function renderProfile() {
+  const user = state.dashboard?.user || state.session?.user || {};
+  const name = userName(user);
+  const reseller = state.resellerSettings || {};
+  const resellerUrl = telegramContactUrl(reseller);
+  const selectedLanguage = user.selected_language || "en";
+  return `
+    ${renderPaymentForm()}
+    ${renderSpinInline()}
+    ${renderLanguageInline(selectedLanguage)}
+    ${renderReferralInline()}
+    ${renderSupportInline()}
+    ${renderProfileInline(user, name)}
+    ${renderCurrencyInline()}
+    ${renderAssistantEntryInline()}
+    ${renderResellerInline(reseller, resellerUrl)}
+    ${state.session?.is_admin ? accountActionRow("shield-check", "Admin Panel", "Manage store, orders, payments and users", "set-route", "admin", "admin-row-link") : ""}
     <section class="close-app-section">
       <button class="action-btn secondary close-app-btn" data-action="close-app" type="button">${icon("x")} Close App</button>
     </section>
@@ -1620,6 +1822,29 @@ document.addEventListener("click", async (event) => {
     if (action === "select-payment-method") {
       state.selectedPaymentMethodId = Number(button.dataset.id);
       render();
+    }
+    if (action === "select-fund-amount") {
+      state.selectedFundAmount = Number(button.dataset.amount || fundPresets[0] || 100);
+      render();
+    }
+    if (action === "start-fund-payment") {
+      state.selectedFundAmount = Number(button.dataset.amount || fundPresets[0] || 100);
+      state.showFundInvoice = true;
+      render();
+      document.querySelector(".fund-invoice-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    if (action === "custom-fund-amount") {
+      const raw = window.prompt("Enter custom amount", String(state.selectedFundAmount || ""));
+      if (raw === null) return;
+      const amount = Number(raw);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        toast("Enter a valid amount");
+        return;
+      }
+      state.selectedFundAmount = amount;
+      state.showFundInvoice = true;
+      render();
+      document.querySelector(".fund-invoice-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
     }
     if (action === "play-spin") {
       state.spinAnimating = true;
