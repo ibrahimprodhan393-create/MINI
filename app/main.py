@@ -28,7 +28,7 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="s
 class PaymentRequestIn(BaseModel):
     amount: Decimal = Field(gt=0)
     method_id: int
-    transaction_id: str = Field(min_length=2, max_length=120)
+    transaction_id: str | None = Field(default=None, max_length=120)
     screenshot_data: str | None = None
     product_id: int | None = None
     duration_days: int | None = None
@@ -407,6 +407,14 @@ def mini_app_assistant_answer(
             f"আপনার বর্তমান wallet balance {wallet}. Account থেকে Add Fund করলে payment request admin approve করার পর balance যোগ হবে. History tab-এ শুধু transaction history দেখা যাবে.",
             suggestions,
         )
+    if contains_any(message, ("addfund", "add fund", "add balance", "deposit", "payment method", "address copy", "screenshot", "manual payment", "অ্যাড ফান্ড", "এড ফান্ড", "স্ক্রিনশট")):
+        detail = f"Active payment methods: {method_names}."
+        if latest_payment:
+            detail += f" Latest payment request {assistant_money(latest_payment['amount'], currency)} - status {latest_payment['status']}."
+        return (
+            f"Add Fund flow: Account > Add Fund এ আগে payment method card select করবেন. Method চাপলে payment address/details দেখা যাবে এবং Copy button দিয়ে address copy করা যাবে. এরপর amount লিখে screenshot upload করে Submit Payment চাপবেন. Transaction ID/Note optional. {detail}",
+            ["Payment address copy", "Screenshot submit", "Payment pending কেন?"],
+        )
     if contains_any(message, ("payment", "pay", "fund", "add money", "add fund", "পেমেন্ট", "ফান্ড", "টাকা", "বিকাশ", "নগদ")):
         detail = f"Active payment methods: {method_names}."
         if latest_payment:
@@ -414,8 +422,8 @@ def mini_app_assistant_answer(
         if pending_payments:
             detail += f" Pending payment আছে {pending_payments}টি."
         return (
-            f"Account section-এর Add Fund অংশে amount, payment method, transaction ID এবং screenshot submit করবেন. {detail} Manual payment admin approve করলে balance add হবে; auto payment method হলে webhook confirm করতে পারে.",
-            ["Payment pending কেন?", "Transaction ID কোথায় দেব?", "Payment method কী কী?"],
+            f"Account section-এর Add Fund অংশে payment method card select করে address copy করবেন, তারপর amount এবং screenshot submit করবেন. Transaction ID/Note optional. {detail} Manual payment admin approve করলে balance add হবে; auto payment method হলে webhook confirm করতে পারে.",
+            ["Payment address copy", "Screenshot submit", "Payment pending কেন?"],
         )
     if contains_any(message, ("order", "invoice", "delivery", "key", "অর্ডার", "ইনভয়েস", "ডেলিভারি", "কি", "চাবি")):
         detail = f"মোট order {stats['total_orders'] or 0}, active subscription {stats['active_subscriptions'] or 0}."
@@ -1395,6 +1403,7 @@ async def create_payment(
         )
         if not method:
             raise HTTPException(status_code=404, detail="Payment method not found.")
+        transaction_id = (data.transaction_id or "").strip() or f"MANUAL-{secrets.token_hex(4).upper()}"
         payment = await conn.fetchrow(
             """
             insert into payment_requests (
@@ -1408,14 +1417,14 @@ async def create_payment(
             data.amount,
             method["id"],
             method["name"],
-            data.transaction_id.strip(),
+            transaction_id,
             data.screenshot_data,
             data.product_id,
             data.duration_days,
             data.coupon_code,
         )
     await notifier.notify_admins(
-        f"Payment pending\nUser: {user['first_name']} ({user['telegram_id']})\nAmount: {data.amount}\nTXID: {data.transaction_id}"
+        f"Payment pending\nUser: {user['first_name']} ({user['telegram_id']})\nAmount: {data.amount}\nTXID: {transaction_id}"
     )
     await notifier.send_message(
         user["telegram_id"],

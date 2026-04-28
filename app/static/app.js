@@ -187,6 +187,23 @@ function toast(message) {
   setTimeout(() => node.remove(), 2800);
 }
 
+async function copyText(value) {
+  const text = String(value || "");
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const input = document.createElement("textarea");
+  input.value = text;
+  input.setAttribute("readonly", "");
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.select();
+  document.execCommand("copy");
+  input.remove();
+}
+
 async function fileToDataUrl(file) {
   if (!file || !file.size) return "";
   return new Promise((resolve, reject) => {
@@ -613,38 +630,51 @@ function renderWallet() {
 }
 
 function renderPaymentForm() {
+  const selected = state.methods.find((method) => String(method.id) === String(state.selectedPaymentMethodId)) || state.methods[0] || null;
+  if (!selected) {
+    return `<section class="panel"><div class="empty">No payment methods available</div></section>`;
+  }
   return `
+    <section class="panel add-fund-panel">
+      <div class="payment-method-grid">
+        ${state.methods.map((method) => `
+          <button class="payment-option ${String(method.id) === String(selected.id) ? "active" : ""}" data-action="select-payment-method" data-id="${method.id}" type="button">
+            <span class="inline-icon">${icon(method.method_type === "auto" ? "badge-check" : "scan-line")}</span>
+            <span>
+              <strong>${escapeHtml(method.name)}</strong>
+              <small>${escapeHtml(method.account_label || "Details")}: ${escapeHtml(method.account_value || method.instructions || "Tap to view")}</small>
+            </span>
+          </button>
+        `).join("")}
+      </div>
+      <div class="payment-detail-card">
+        <div>
+          <small>${escapeHtml(selected.account_label || "Payment address")}</small>
+          <strong>${escapeHtml(selected.account_value || "Address not set")}</strong>
+        </div>
+        <button class="icon-btn" data-action="copy-payment-address" data-value="${escapeHtml(selected.account_value || "")}" type="button" aria-label="Copy payment address">
+          ${icon("copy")}
+        </button>
+      </div>
+      ${selected.instructions ? `<div class="notice"><strong>${escapeHtml(selected.name)}</strong><p>${escapeHtml(selected.instructions)}</p></div>` : ""}
+      ${selected.qr_image_url ? `<img class="screenshot" src="${escapeHtml(selected.qr_image_url)}" alt="${escapeHtml(selected.name)} QR" />` : ""}
+    </section>
     <form class="panel form-grid" id="payment-form">
+      <input name="method_id" type="hidden" value="${escapeHtml(selected.id)}" />
       <div class="field">
         <label>Amount</label>
         <input name="amount" type="number" step="0.01" min="1" required />
       </div>
       <div class="field">
-        <label>Payment method</label>
-        <select name="method_id" required>
-          ${state.methods.map((method) => `<option value="${method.id}">${escapeHtml(method.name)}</option>`).join("")}
-        </select>
-      </div>
-      <div class="field">
-        <label>Transaction ID</label>
-        <input name="transaction_id" required autocomplete="off" />
+        <label>Transaction ID / Note</label>
+        <input name="transaction_id" autocomplete="off" placeholder="Optional" />
       </div>
       <div class="field">
         <label>Screenshot</label>
-        <input name="screenshot" type="file" accept="image/*" />
+        <input name="screenshot" type="file" accept="image/*" capture="environment" required />
       </div>
       <button class="action-btn" type="submit">${icon("send")} Submit Payment</button>
     </form>
-    <section class="table-lite" style="margin-top:10px;">
-      ${state.methods.map((method) => `
-        <article class="order-card">
-          <h4>${escapeHtml(method.name)}</h4>
-          <div class="muted">${escapeHtml(method.account_label || "Details")}: ${escapeHtml(method.account_value || "-")}</div>
-          <div class="muted">${escapeHtml(method.instructions)}</div>
-          ${method.qr_image_url ? `<img class="screenshot" src="${escapeHtml(method.qr_image_url)}" alt="${escapeHtml(method.name)} QR" />` : ""}
-        </article>
-      `).join("")}
-    </section>
   `;
 }
 
@@ -1509,6 +1539,35 @@ async function submitOrder(form) {
   await setRoute("orders");
 }
 
+async function sendAssistantMessage(message) {
+  const clean = String(message || "").trim();
+  if (!clean || state.aiBusy) return;
+  state.aiMessages.push({ role: "user", text: clean });
+  state.aiBusy = true;
+  render();
+  try {
+    const result = await api("/api/assistant/chat", {
+      method: "POST",
+      body: { message: clean },
+    });
+    state.aiMessages.push({
+      role: "assistant",
+      text: result.reply || "I could not find an answer. Please ask about payment, order, wallet, spin, support, or reseller.",
+      suggestions: result.suggestions || [],
+    });
+  } catch (error) {
+    state.aiMessages.push({
+      role: "assistant",
+      text: `Assistant error: ${error.message}. You can still use Support from the Account page.`,
+      suggestions: ["Support কোথায়?", "Payment pending কেন?"],
+    });
+    toast(error.message);
+  } finally {
+    state.aiBusy = false;
+    render();
+  }
+}
+
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-action]");
   if (!button) return;
@@ -1569,14 +1628,19 @@ document.addEventListener("click", async (event) => {
       document.getElementById(targetId)?.scrollIntoView({ behavior: "smooth", block: "start" });
     }
     if (action === "ai-suggestion") {
-      const input = document.querySelector("#ai-chat-form [name='message']");
-      if (input) {
-        input.value = button.dataset.message || "";
-        input.focus();
+      await sendAssistantMessage(button.dataset.message || "");
+    }
+    if (action === "copy-payment-address") {
+      const value = button.dataset.value || "";
+      if (!value) {
+        toast("Payment address not set");
+        return;
       }
+      await copyText(value);
+      toast("Payment address copied");
     }
     if (action === "copy-referral") {
-      await navigator.clipboard.writeText(state.referrals?.referral_link || state.referrals?.referral_code || "");
+      await copyText(state.referrals?.referral_link || state.referrals?.referral_code || "");
       toast("Referral link copied");
     }
     if (action === "open-support-chat" || action === "open-reseller-chat") {
@@ -1778,22 +1842,7 @@ document.addEventListener("submit", async (event) => {
     if (form.id === "ai-chat-form") {
       event.preventDefault();
       const data = new FormData(form);
-      const message = String(data.get("message") || "").trim();
-      if (!message) return;
-      state.aiMessages.push({ role: "user", text: message });
-      state.aiBusy = true;
-      render();
-      const result = await api("/api/assistant/chat", {
-        method: "POST",
-        body: { message },
-      });
-      state.aiMessages.push({
-        role: "assistant",
-        text: result.reply,
-        suggestions: result.suggestions || [],
-      });
-      state.aiBusy = false;
-      render();
+      await sendAssistantMessage(data.get("message"));
     }
     if (form.id === "currency-form") {
       event.preventDefault();

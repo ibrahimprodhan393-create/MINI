@@ -20,7 +20,9 @@ This file saves the latest change set in plain text because Git is not available
 - Orders remains only order history.
 - Account now uses compact action rows and contains:
   - Wallet balance
-  - Add Fund form
+  - Add Fund payment method cards
+  - Payment address/details copy button
+  - Amount and screenshot submit form
   - Payment method details
   - Payment request status/history
   - AI Assistant
@@ -52,6 +54,8 @@ This file saves the latest change set in plain text because Git is not available
 - Added a new AI Assistant section from the Account screen.
 - It answers questions about wallet, payment, orders, delivery, product sections, lucky spin, referral, coupon, support, reseller, language/currency, and admin usage.
 - It uses live app data and admin custom knowledge, without requiring an external AI API key.
+- Assistant suggestion buttons now send the question directly.
+- Assistant errors are shown inside the chat instead of silently failing.
 
 ## Database Changes
 
