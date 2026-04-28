@@ -72,6 +72,20 @@ alter table products add column if not exists feature_text text not null default
 alter table products add column if not exists video_url text not null default '';
 alter table products add column if not exists panel_url text not null default '';
 
+create table if not exists product_durations (
+    id bigserial primary key,
+    product_id bigint not null references products(id) on delete cascade,
+    duration_days int not null check (duration_days > 0),
+    price numeric(12,2) not null default 0 check (price >= 0),
+    sort_order int not null default 0,
+    active boolean not null default true,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
+alter table product_durations add column if not exists sort_order int not null default 0;
+alter table product_durations add column if not exists active boolean not null default true;
+
 create table if not exists payment_methods (
     id bigserial primary key,
     name text not null unique,
@@ -100,7 +114,7 @@ create table if not exists payment_requests (
     transaction_id text not null,
     screenshot_data text,
     checkout_product_id bigint references products(id) on delete set null,
-    checkout_duration_days int check (checkout_duration_days in (1, 7, 30)),
+    checkout_duration_days int check (checkout_duration_days > 0),
     checkout_coupon_code text,
     auto_order_id bigint,
     status text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
@@ -111,7 +125,7 @@ create table if not exists payment_requests (
 );
 
 alter table payment_requests add column if not exists checkout_product_id bigint references products(id) on delete set null;
-alter table payment_requests add column if not exists checkout_duration_days int check (checkout_duration_days in (1, 7, 30));
+alter table payment_requests add column if not exists checkout_duration_days int check (checkout_duration_days > 0);
 alter table payment_requests add column if not exists checkout_coupon_code text;
 alter table payment_requests add column if not exists auto_order_id bigint;
 
@@ -145,7 +159,7 @@ create table if not exists orders (
     user_id bigint not null references users(id) on delete cascade,
     product_id bigint references products(id) on delete set null,
     product_snapshot jsonb not null default '{}'::jsonb,
-    duration_days int not null check (duration_days in (1, 7, 30)),
+    duration_days int not null check (duration_days > 0),
     coupon_id bigint references coupons(id),
     subtotal numeric(12,2) not null default 0,
     discount numeric(12,2) not null default 0,
@@ -162,7 +176,7 @@ create table if not exists orders (
 create table if not exists product_keys (
     id bigserial primary key,
     product_id bigint not null references products(id) on delete cascade,
-    duration_days int not null default 1 check (duration_days in (1, 7, 30)),
+    duration_days int not null default 1 check (duration_days > 0),
     key_value text not null,
     status text not null default 'available' check (status in ('available', 'delivered')),
     assigned_order_id bigint references orders(id) on delete set null,
@@ -172,7 +186,26 @@ create table if not exists product_keys (
     delivered_at timestamptz
 );
 
-alter table product_keys add column if not exists duration_days int not null default 1 check (duration_days in (1, 7, 30));
+alter table product_keys add column if not exists duration_days int not null default 1 check (duration_days > 0);
+
+do $$
+declare
+    item record;
+begin
+    for item in
+        select conrelid::regclass as table_name, conname
+          from pg_constraint
+         where conrelid in ('payment_requests'::regclass, 'orders'::regclass, 'product_keys'::regclass)
+           and contype = 'c'
+           and pg_get_constraintdef(oid) ilike '%duration_days%'
+           and (
+               pg_get_constraintdef(oid) ilike '%1, 7, 30%'
+               or pg_get_constraintdef(oid) ilike '%1,7,30%'
+           )
+    loop
+        execute format('alter table %s drop constraint if exists %I', item.table_name, item.conname);
+    end loop;
+end $$;
 
 create table if not exists referrals (
     id bigserial primary key,
@@ -242,6 +275,8 @@ create table if not exists spin_history (
 
 create index if not exists idx_categories_parent on categories(parent_key, sort_order);
 create index if not exists idx_products_category on products(category_key);
+create unique index if not exists idx_product_durations_unique on product_durations(product_id, duration_days);
+create index if not exists idx_product_durations_product on product_durations(product_id, sort_order, duration_days);
 create index if not exists idx_orders_user on orders(user_id, created_at desc);
 create index if not exists idx_product_keys_product_duration_status on product_keys(product_id, duration_days, status, created_at);
 create index if not exists idx_product_keys_product_status on product_keys(product_id, status, created_at);
@@ -321,6 +356,30 @@ where not exists (select 1 from payment_methods where name = 'USDT');
 insert into coupons (code, discount_type, discount_value, active, max_uses) values
     ('WELCOME10', 'percent', 10, true, 500)
 on conflict (code) do nothing;
+
+insert into product_durations (product_id, duration_days, price, sort_order, active)
+select id, 1, price_1_day, 10, true
+  from products p
+ where not exists (
+       select 1 from product_durations d
+        where d.product_id = p.id and d.duration_days = 1
+ );
+
+insert into product_durations (product_id, duration_days, price, sort_order, active)
+select id, 7, price_7_days, 20, true
+  from products p
+ where not exists (
+       select 1 from product_durations d
+        where d.product_id = p.id and d.duration_days = 7
+ );
+
+insert into product_durations (product_id, duration_days, price, sort_order, active)
+select id, 30, price_30_days, 30, true
+  from products p
+ where not exists (
+       select 1 from product_durations d
+        where d.product_id = p.id and d.duration_days = 30
+ );
 
 insert into notices (title, body, active, starts_at)
 select 'Welcome', 'Add balance, apply coupons, and place orders directly from Telegram.', true, now()

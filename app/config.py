@@ -35,6 +35,9 @@ class Settings:
     telegram_auth_max_age_seconds = int(os.getenv("TELEGRAM_AUTH_MAX_AGE_SECONDS", "86400"))
     db_pool_min_size = int(os.getenv("DB_POOL_MIN_SIZE", "1"))
     db_pool_max_size = int(os.getenv("DB_POOL_MAX_SIZE", "5"))
+    ai_api_key = os.getenv("AI_API_KEY", "")
+    ai_api_url = os.getenv("AI_API_URL", "")
+    ai_model = os.getenv("AI_MODEL", "gpt-4o-mini")
 
 
 settings = Settings()

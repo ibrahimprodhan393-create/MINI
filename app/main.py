@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import asyncpg
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -37,8 +38,8 @@ class PaymentRequestIn(BaseModel):
     @field_validator("duration_days")
     @classmethod
     def valid_optional_duration(cls, value: int | None) -> int | None:
-        if value is not None and value not in {1, 7, 30}:
-            raise ValueError("Duration must be 1, 7, or 30 days.")
+        if value is not None and value < 1:
+            raise ValueError("Duration must be at least 1 day.")
         return value
 
 
@@ -56,8 +57,8 @@ class OrderCreateIn(BaseModel):
     @field_validator("duration_days")
     @classmethod
     def valid_duration(cls, value: int) -> int:
-        if value not in {1, 7, 30}:
-            raise ValueError("Duration must be 1, 7, or 30 days.")
+        if value < 1:
+            raise ValueError("Duration must be at least 1 day.")
         return value
 
 
@@ -126,6 +127,12 @@ class BrandingSettingsIn(BaseModel):
     logo_url: str = Field(default="", max_length=1000000)
 
 
+class ProductDurationIn(BaseModel):
+    duration_days: int = Field(gt=0, le=3650)
+    price: Decimal = Field(ge=0)
+    sort_order: int = 0
+
+
 class ProductIn(BaseModel):
     category_key: str
     name: str = Field(min_length=2, max_length=160)
@@ -134,9 +141,10 @@ class ProductIn(BaseModel):
     video_url: str = ""
     panel_url: str = ""
     image_url: str = ""
-    price_1_day: Decimal = Field(ge=0)
-    price_7_days: Decimal = Field(ge=0)
-    price_30_days: Decimal = Field(ge=0)
+    price_1_day: Decimal = Field(default=Decimal("0"), ge=0)
+    price_7_days: Decimal = Field(default=Decimal("0"), ge=0)
+    price_30_days: Decimal = Field(default=Decimal("0"), ge=0)
+    durations: list[ProductDurationIn] = Field(default_factory=list)
     stock_status: bool = True
     stock_quantity: int | None = Field(default=None, ge=0)
     active: bool = True
@@ -150,8 +158,8 @@ class ProductKeyUploadIn(BaseModel):
     @field_validator("duration_days")
     @classmethod
     def valid_key_duration(cls, value: int) -> int:
-        if value not in {1, 7, 30}:
-            raise ValueError("Duration must be 1, 7, or 30 days.")
+        if value < 1:
+            raise ValueError("Duration must be at least 1 day.")
         return value
 
 
@@ -251,11 +259,73 @@ def referral_code(telegram_id: int) -> str:
     return f"ref_{telegram_id}"
 
 
-def price_field(duration_days: int) -> str:
-    return {1: "price_1_day", 7: "price_7_days", 30: "price_30_days"}[duration_days]
+LEGACY_DURATIONS = (1, 7, 30)
+
+
+def quote_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def row_value(row: asyncpg.Record | dict[str, Any], key: str, default: Any = None) -> Any:
+    if isinstance(row, asyncpg.Record):
+        return row[key] if key in row.keys() else default
+    return row.get(key, default)
+
+
+def legacy_duration_price(product: asyncpg.Record | dict[str, Any], duration_days: int) -> Decimal | None:
+    fields = {1: "price_1_day", 7: "price_7_days", 30: "price_30_days"}
+    field = fields.get(duration_days)
+    if not field:
+        return None
+    return Decimal(row_value(product, field, 0) or 0)
+
+
+def legacy_duration_payload(product: asyncpg.Record | dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "duration_days": days,
+            "price": legacy_duration_price(product, days) or Decimal("0"),
+            "sort_order": index * 10,
+            "active": True,
+        }
+        for index, days in enumerate(LEGACY_DURATIONS, start=1)
+    ]
+
+
+def normalize_product_durations(data: ProductIn) -> list[dict[str, Any]]:
+    raw = data.durations or [
+        ProductDurationIn(duration_days=1, price=data.price_1_day, sort_order=10),
+        ProductDurationIn(duration_days=7, price=data.price_7_days, sort_order=20),
+        ProductDurationIn(duration_days=30, price=data.price_30_days, sort_order=30),
+    ]
+    by_days: dict[int, dict[str, Any]] = {}
+    for index, item in enumerate(raw, start=1):
+        by_days[item.duration_days] = {
+            "duration_days": item.duration_days,
+            "price": Decimal(item.price),
+            "sort_order": item.sort_order or index * 10,
+            "active": True,
+        }
+    if not by_days:
+        raise HTTPException(status_code=400, detail="Add at least one product duration.")
+    return sorted(by_days.values(), key=lambda item: (item["sort_order"], item["duration_days"]))
+
+
+def legacy_prices_for_product(data: ProductIn, durations: list[dict[str, Any]]) -> tuple[Decimal, Decimal, Decimal]:
+    prices = {
+        1: Decimal(data.price_1_day or 0),
+        7: Decimal(data.price_7_days or 0),
+        30: Decimal(data.price_30_days or 0),
+    }
+    for duration in durations:
+        if duration["duration_days"] in prices:
+            prices[duration["duration_days"]] = Decimal(duration["price"])
+    return prices[1], prices[7], prices[30]
 
 
 MAX_SPIN_BONUS = Decimal("0.05")
+PRODUCT_DURATIONS_SCHEMA_READY = False
+PRODUCT_KEYS_SCHEMA_READY = False
 
 
 SUPPORT_SETTING_DEFAULTS = {
@@ -374,6 +444,175 @@ async def ensure_user_preferences_runtime_schema(conn: asyncpg.Connection) -> No
 
 async def ensure_payment_method_runtime_schema(conn: asyncpg.Connection) -> None:
     await conn.execute("alter table payment_methods add column if not exists logo_url text not null default ''")
+
+
+async def drop_duration_check_constraints(conn: asyncpg.Connection) -> None:
+    for table in ("payment_requests", "orders", "product_keys"):
+        constraints = await conn.fetch(
+            """
+            select conname
+              from pg_constraint
+             where conrelid = to_regclass($1)
+               and contype = 'c'
+               and pg_get_constraintdef(oid) ilike '%duration_days%'
+               and (
+                   pg_get_constraintdef(oid) ilike '%1, 7, 30%'
+                   or pg_get_constraintdef(oid) ilike '%1,7,30%'
+               )
+            """,
+            table,
+        )
+        for constraint in constraints:
+            await conn.execute(
+                f"alter table {table} drop constraint if exists {quote_identifier(constraint['conname'])}"
+            )
+
+
+async def ensure_product_durations_runtime_schema(conn: asyncpg.Connection) -> None:
+    global PRODUCT_DURATIONS_SCHEMA_READY
+    if PRODUCT_DURATIONS_SCHEMA_READY:
+        return
+    await drop_duration_check_constraints(conn)
+    await conn.execute(
+        """
+        create table if not exists product_durations (
+            id bigserial primary key,
+            product_id bigint not null references products(id) on delete cascade,
+            duration_days int not null check (duration_days > 0),
+            price numeric(12,2) not null default 0 check (price >= 0),
+            sort_order int not null default 0,
+            active boolean not null default true,
+            created_at timestamptz not null default now(),
+            updated_at timestamptz not null default now()
+        )
+        """
+    )
+    await conn.execute("alter table product_durations add column if not exists active boolean not null default true")
+    await conn.execute("alter table product_durations add column if not exists sort_order int not null default 0")
+    await conn.execute("create unique index if not exists idx_product_durations_unique on product_durations(product_id, duration_days)")
+    await conn.execute("create index if not exists idx_product_durations_product on product_durations(product_id, sort_order, duration_days)")
+    for index, days in enumerate(LEGACY_DURATIONS, start=1):
+        await conn.execute(
+            """
+            insert into product_durations (product_id, duration_days, price, sort_order, active)
+            select id,
+                   $1::int,
+                   case $1::int
+                       when 1 then price_1_day
+                       when 7 then price_7_days
+                       else price_30_days
+                   end,
+                   $2::int,
+                   true
+              from products p
+             where not exists (
+                   select 1
+                     from product_durations d
+                    where d.product_id = p.id
+                      and d.duration_days = $1
+             )
+            """,
+            days,
+            index * 10,
+        )
+    PRODUCT_DURATIONS_SCHEMA_READY = True
+
+
+async def product_duration_map(
+    conn: asyncpg.Connection,
+    product_ids: list[int],
+) -> dict[int, list[dict[str, Any]]]:
+    if not product_ids:
+        return {}
+    await ensure_product_durations_runtime_schema(conn)
+    rows = await conn.fetch(
+        """
+        select product_id, duration_days, price, sort_order, active
+          from product_durations
+         where product_id = any($1::bigint[])
+           and active = true
+         order by sort_order, duration_days
+        """,
+        product_ids,
+    )
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(int(row["product_id"]), []).append({key: row[key] for key in row.keys()})
+    return grouped
+
+
+async def attach_product_durations(
+    conn: asyncpg.Connection,
+    rows: list[asyncpg.Record],
+) -> list[dict[str, Any]]:
+    products = [{key: row[key] for key in row.keys()} for row in rows]
+    grouped = await product_duration_map(conn, [int(product["id"]) for product in products])
+    for product in products:
+        product["durations"] = grouped.get(int(product["id"])) or legacy_duration_payload(product)
+    return products
+
+
+async def fetch_product_duration(
+    conn: asyncpg.Connection,
+    product_id: int,
+    duration_days: int,
+) -> dict[str, Any] | None:
+    if duration_days < 1:
+        return None
+    await ensure_product_durations_runtime_schema(conn)
+    row = await conn.fetchrow(
+        """
+        select product_id, duration_days, price, sort_order, active
+          from product_durations
+         where product_id = $1
+           and duration_days = $2
+           and active = true
+        """,
+        product_id,
+        duration_days,
+    )
+    if row:
+        return {key: row[key] for key in row.keys()}
+    product = await conn.fetchrow(
+        "select id, price_1_day, price_7_days, price_30_days from products where id = $1",
+        product_id,
+    )
+    if not product:
+        return None
+    legacy_price = legacy_duration_price(product, duration_days)
+    if legacy_price is None:
+        return None
+    return {
+        "product_id": product_id,
+        "duration_days": duration_days,
+        "price": legacy_price,
+        "sort_order": duration_days,
+        "active": True,
+    }
+
+
+async def replace_product_durations(
+    conn: asyncpg.Connection,
+    product_id: int,
+    durations: list[dict[str, Any]],
+) -> None:
+    await ensure_product_durations_runtime_schema(conn)
+    await conn.execute("delete from product_durations where product_id = $1", product_id)
+    await conn.executemany(
+        """
+        insert into product_durations (product_id, duration_days, price, sort_order, active)
+        values ($1, $2, $3, $4, true)
+        on conflict (product_id, duration_days) do update set
+            price = excluded.price,
+            sort_order = excluded.sort_order,
+            active = true,
+            updated_at = now()
+        """,
+        [
+            (product_id, item["duration_days"], item["price"], item["sort_order"])
+            for item in durations
+        ],
+    )
 
 
 def assistant_money(value: Any, currency: asyncpg.Record | None) -> str:
@@ -739,12 +978,133 @@ def mini_app_assistant_answer(
     return built_in_general_answer(message)
 
 
+def assistant_context_text(
+    *,
+    user: asyncpg.Record,
+    currency: asyncpg.Record | None,
+    stats: dict[str, Any] | asyncpg.Record,
+    payments: list[Any],
+    orders: list[Any],
+    methods: list[Any],
+    categories: list[Any],
+    products: list[Any],
+    support: dict[str, Any],
+    reseller: dict[str, Any],
+    ai_settings: dict[str, Any],
+) -> str:
+    method_names = ", ".join(row_value(method, "name", "") for method in methods if row_value(method, "name", ""))
+    category_names = ", ".join(row_value(category, "name", "") for category in categories if row_value(category, "name", ""))
+    product_names = ", ".join(row_value(product, "name", "") for product in products if row_value(product, "name", ""))
+    latest_order = orders[0] if orders else None
+    latest_payment = payments[0] if payments else None
+    support_contact = (
+        f"@{support['telegram_username']}"
+        if support.get("telegram_username")
+        else f"ID {support['telegram_user_id']}" if support.get("telegram_user_id") else "not set"
+    )
+    reseller_contact = (
+        f"@{reseller['telegram_username']}"
+        if reseller.get("telegram_username")
+        else f"ID {reseller['telegram_user_id']}" if reseller.get("telegram_user_id") else "not set"
+    )
+    return "\n".join(
+        [
+            f"User: {row_value(user, 'first_name', '')} @{row_value(user, 'username', '')} Telegram ID {row_value(user, 'telegram_id', '')}.",
+            f"Wallet balance: {assistant_money(row_value(user, 'wallet_balance', 0), currency)}.",
+            f"Orders: {row_value(stats, 'total_orders', 0)} total, {row_value(stats, 'active_subscriptions', 0)} active subscriptions.",
+            f"Active payment methods: {method_names or 'none'}.",
+            f"Top categories: {category_names or 'none'}.",
+            f"Recent products: {product_names or 'none'}.",
+            f"Latest order: {row_value(latest_order, 'invoice_id', 'none') if latest_order else 'none'}.",
+            f"Latest payment: {row_value(latest_payment, 'status', 'none') if latest_payment else 'none'}.",
+            f"Support contact: {support_contact}. Reseller contact: {reseller_contact}.",
+            f"Store knowledge from admin: {ai_settings.get('custom_knowledge') or 'none'}",
+        ]
+    )
+
+
+async def external_ai_answer(
+    message: str,
+    language: str,
+    *,
+    user: asyncpg.Record,
+    currency: asyncpg.Record | None,
+    stats: dict[str, Any] | asyncpg.Record,
+    payments: list[Any],
+    orders: list[Any],
+    methods: list[Any],
+    categories: list[Any],
+    products: list[Any],
+    support: dict[str, Any],
+    reseller: dict[str, Any],
+    ai_settings: dict[str, Any],
+) -> str | None:
+    if not settings.ai_api_key:
+        return None
+    url = settings.ai_api_url.strip() or "https://api.openai.com/v1/chat/completions"
+    context = assistant_context_text(
+        user=user,
+        currency=currency,
+        stats=stats,
+        payments=payments,
+        orders=orders,
+        methods=methods,
+        categories=categories,
+        products=products,
+        support=support,
+        reseller=reseller,
+        ai_settings=ai_settings,
+    )
+    system_prompt = (
+        "You are ACI AI inside a Telegram Mini App shop. Answer customer questions clearly, "
+        "politely, and practically. You can answer general questions too, not only store FAQ. "
+        "Use the app context when the question is about payment, products, orders, wallet, "
+        "daily spin, referral, reseller, support, admin, language, or currency. If the selected "
+        f"language code is '{language}', reply in that language when possible; otherwise reply in English. "
+        "Never invent private payment confirmations or delivered keys. If a payment/order status is unknown, "
+        "tell the user where to check it in the app.\n\nApp context:\n"
+        f"{context}"
+    )
+    payload = {
+        "model": settings.ai_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": message},
+        ],
+        "temperature": 0.35,
+        "max_tokens": 450,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {settings.ai_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            response.raise_for_status()
+        result = response.json()
+        if result.get("output_text"):
+            return str(result["output_text"]).strip()
+        choices = result.get("choices") or []
+        if choices:
+            content = choices[0].get("message", {}).get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+    except Exception:
+        return None
+    return None
+
+
 async def run_schema() -> None:
     if not settings.auto_migrate or not settings.database_url:
         return
     schema_path = BASE_DIR / "db" / "schema.sql"
     async with connection() as conn:
         await conn.execute(schema_path.read_text(encoding="utf-8"))
+        await ensure_product_durations_runtime_schema(conn)
 
 
 async def ensure_spin_runtime_schema(conn: asyncpg.Connection) -> None:
@@ -823,12 +1183,15 @@ async def ensure_spin_runtime_schema(conn: asyncpg.Connection) -> None:
 
 
 async def ensure_product_keys_runtime_schema(conn: asyncpg.Connection) -> None:
+    global PRODUCT_KEYS_SCHEMA_READY
+    if PRODUCT_KEYS_SCHEMA_READY:
+        return
     await conn.execute(
         """
         create table if not exists product_keys (
             id bigserial primary key,
             product_id bigint not null references products(id) on delete cascade,
-            duration_days int not null default 1 check (duration_days in (1, 7, 30)),
+            duration_days int not null default 1 check (duration_days > 0),
             key_value text not null,
             status text not null default 'available' check (status in ('available', 'delivered')),
             assigned_order_id bigint references orders(id) on delete set null,
@@ -839,8 +1202,9 @@ async def ensure_product_keys_runtime_schema(conn: asyncpg.Connection) -> None:
         )
         """
     )
+    await drop_duration_check_constraints(conn)
     await conn.execute(
-        "alter table product_keys add column if not exists duration_days int not null default 1 check (duration_days in (1, 7, 30))"
+        "alter table product_keys add column if not exists duration_days int not null default 1 check (duration_days > 0)"
     )
     await conn.execute(
         "create index if not exists idx_product_keys_product_duration_status on product_keys(product_id, duration_days, status, created_at)"
@@ -848,6 +1212,7 @@ async def ensure_product_keys_runtime_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(
         "create index if not exists idx_product_keys_product_status on product_keys(product_id, status, created_at)"
     )
+    PRODUCT_KEYS_SCHEMA_READY = True
 
 
 async def upsert_telegram_user(
@@ -1072,11 +1437,10 @@ async def place_wallet_order_locked(
     duration_days: int,
     coupon_code: str | None,
 ) -> tuple[asyncpg.Record, Decimal, asyncpg.Record | None]:
-    field = price_field(duration_days)
     fresh_user = await conn.fetchrow("select * from users where id = $1 for update", user_id)
     product = await conn.fetchrow(
-        f"""
-        select p.*, c.name as category_name, {field} as selected_price
+        """
+        select p.*, c.name as category_name
           from products p
           join categories c on c.key = p.category_key
          where p.id = $1 and p.active = true
@@ -1089,7 +1453,10 @@ async def place_wallet_order_locked(
     if not product["stock_status"] or product["stock_quantity"] == 0:
         raise HTTPException(status_code=400, detail="Product is out of stock.")
 
-    subtotal = Decimal(product["selected_price"])
+    duration = await fetch_product_duration(conn, product_id, duration_days)
+    if not duration:
+        raise HTTPException(status_code=400, detail="This product duration is not available.")
+    subtotal = Decimal(duration["price"])
     coupon, discount = await compute_coupon_discount(conn, coupon_code, subtotal)
     total = subtotal - discount
     if Decimal(fresh_user["wallet_balance"]) < total:
@@ -1111,6 +1478,8 @@ async def place_wallet_order_locked(
         "category": product["category_name"],
         "image_url": product["image_url"],
         "video_url": product["video_url"],
+        "duration_days": duration_days,
+        "duration_price": str(subtotal),
     }
     order = await conn.fetchrow(
         """
@@ -1534,6 +1903,24 @@ async def assistant_chat(
             "reply": "ACI AI is currently inactive from the admin panel. Please use Support from the Account page.",
             "suggestions": ["Contact support", "Payment pending", "Order status"],
         }
+    suggestions = ["How do I add funds?", "Where is my order?", "Daily spin reward", "Contact support"]
+    ai_reply = await external_ai_answer(
+        data.message.strip(),
+        data.language.strip().lower() or "en",
+        user=user,
+        currency=currency,
+        stats=stats,
+        payments=list(payments),
+        orders=list(orders),
+        methods=list(methods),
+        categories=list(categories),
+        products=list(products),
+        support=support,
+        reseller=reseller,
+        ai_settings=ai_settings,
+    )
+    if ai_reply:
+        return {"reply": ai_reply, "suggestions": suggestions}
     try:
         reply, suggestions = mini_app_assistant_answer(
             data.message.strip(),
@@ -1626,7 +2013,8 @@ async def products(
             category,
             search,
         )
-    return {"products": jsonable(rows)}
+        products_with_prices = await attach_product_durations(conn, rows)
+    return {"products": jsonable(products_with_prices)}
 
 
 @app.get("/api/products/{product_id}")
@@ -1644,9 +2032,10 @@ async def product_detail(
             """,
             product_id,
         )
+        products_with_prices = await attach_product_durations(conn, [row] if row else [])
     if not row:
         raise HTTPException(status_code=404, detail="Product not found.")
-    return {"product": jsonable(row)}
+    return {"product": jsonable(products_with_prices[0])}
 
 
 @app.post("/api/coupons/validate")
@@ -1654,17 +2043,16 @@ async def validate_coupon(
     data: CouponValidateIn,
     user: Annotated[asyncpg.Record, Depends(current_user)],
 ) -> dict[str, Any]:
-    field = price_field(data.duration_days)
     async with connection() as conn:
-        product = await conn.fetchrow(f"select id, {field} as price from products where id = $1", data.product_id)
-        if not product:
-            raise HTTPException(status_code=404, detail="Product not found.")
-        coupon, discount = await compute_coupon_discount(conn, data.code, Decimal(product["price"]))
+        duration = await fetch_product_duration(conn, data.product_id, data.duration_days)
+        if not duration:
+            raise HTTPException(status_code=404, detail="Product duration not found.")
+        coupon, discount = await compute_coupon_discount(conn, data.code, Decimal(duration["price"]))
     return {
         "coupon": jsonable(coupon),
-        "subtotal": jsonable(product["price"]),
+        "subtotal": jsonable(duration["price"]),
         "discount": jsonable(discount),
-        "total": jsonable(Decimal(product["price"]) - discount),
+        "total": jsonable(Decimal(duration["price"]) - discount),
     }
 
 
@@ -1732,6 +2120,10 @@ async def create_payment(
         )
         if not method:
             raise HTTPException(status_code=404, detail="Payment method not found.")
+        if data.product_id and data.duration_days:
+            duration = await fetch_product_duration(conn, data.product_id, data.duration_days)
+            if not duration:
+                raise HTTPException(status_code=400, detail="This product duration is not available.")
         transaction_id = (data.transaction_id or "").strip() or f"MANUAL-{secrets.token_hex(4).upper()}"
         payment = await conn.fetchrow(
             """
@@ -2039,21 +2431,36 @@ async def admin_dashboard(admin: Annotated[asyncpg.Record, Depends(admin_user)])
 @app.get("/api/admin/products")
 async def admin_products(admin: Annotated[asyncpg.Record, Depends(admin_user)]) -> dict[str, Any]:
     async with connection() as conn:
+        await ensure_product_durations_runtime_schema(conn)
+        await ensure_product_keys_runtime_schema(conn)
         rows = await conn.fetch(
             """
             select p.*, c.name as category_name,
                    (select count(*) from product_keys k where k.product_id = p.id and k.status = 'available') as available_keys,
                    (select count(*) from product_keys k where k.product_id = p.id and k.status = 'delivered') as delivered_keys,
-                   (select count(*) from product_keys k where k.product_id = p.id and k.duration_days = 1 and k.status = 'available') as available_1_day_keys,
-                   (select count(*) from product_keys k where k.product_id = p.id and k.duration_days = 7 and k.status = 'available') as available_7_day_keys,
-                   (select count(*) from product_keys k where k.product_id = p.id and k.duration_days = 30 and k.status = 'available') as available_30_day_keys
+                   (
+                       select coalesce(jsonb_agg(jsonb_build_object(
+                           'duration_days', grouped.duration_days,
+                           'available', grouped.available,
+                           'delivered', grouped.delivered
+                       ) order by grouped.duration_days), '[]'::jsonb)
+                         from (
+                             select duration_days,
+                                    count(*) filter (where status = 'available') as available,
+                                    count(*) filter (where status = 'delivered') as delivered
+                               from product_keys
+                              where product_id = p.id
+                              group by duration_days
+                         ) grouped
+                   ) as key_counts
               from products p
               left join categories c on c.key = p.category_key
              order by p.created_at desc
             """
         )
         cats = await conn.fetch("select * from categories order by sort_order")
-    return {"products": jsonable(rows), "categories": jsonable(cats)}
+        products_with_prices = await attach_product_durations(conn, rows)
+    return {"products": jsonable(products_with_prices), "categories": jsonable(cats)}
 
 
 @app.get("/api/admin/product-keys")
@@ -2062,18 +2469,31 @@ async def admin_product_keys(
     product_id: int | None = None,
     duration_days: int | None = None,
 ) -> dict[str, Any]:
-    if duration_days is not None and duration_days not in {1, 7, 30}:
-        raise HTTPException(status_code=400, detail="Duration must be 1, 7, or 30 days.")
+    if duration_days is not None and duration_days < 1:
+        raise HTTPException(status_code=400, detail="Duration must be at least 1 day.")
     async with connection() as conn:
+        await ensure_product_durations_runtime_schema(conn)
         await ensure_product_keys_runtime_schema(conn)
         products = await conn.fetch(
             """
-            select p.id, p.name, c.name as category_name,
+            select p.*, c.name as category_name,
                    (select count(*) from product_keys k where k.product_id = p.id and k.status = 'available') as available_keys,
                    (select count(*) from product_keys k where k.product_id = p.id and k.status = 'delivered') as delivered_keys,
-                   (select count(*) from product_keys k where k.product_id = p.id and k.duration_days = 1 and k.status = 'available') as available_1_day_keys,
-                   (select count(*) from product_keys k where k.product_id = p.id and k.duration_days = 7 and k.status = 'available') as available_7_day_keys,
-                   (select count(*) from product_keys k where k.product_id = p.id and k.duration_days = 30 and k.status = 'available') as available_30_day_keys
+                   (
+                       select coalesce(jsonb_agg(jsonb_build_object(
+                           'duration_days', grouped.duration_days,
+                           'available', grouped.available,
+                           'delivered', grouped.delivered
+                       ) order by grouped.duration_days), '[]'::jsonb)
+                         from (
+                             select duration_days,
+                                    count(*) filter (where status = 'available') as available,
+                                    count(*) filter (where status = 'delivered') as delivered
+                               from product_keys
+                              where product_id = p.id
+                              group by duration_days
+                         ) grouped
+                   ) as key_counts
               from products p
               left join categories c on c.key = p.category_key
              order by c.sort_order nulls last, p.name
@@ -2096,7 +2516,8 @@ async def admin_product_keys(
             product_id,
             duration_days,
         )
-    return {"products": jsonable(products), "keys": jsonable(keys)}
+        products_with_prices = await attach_product_durations(conn, products)
+    return {"products": jsonable(products_with_prices), "keys": jsonable(keys)}
 
 
 @app.post("/api/admin/product-keys")
@@ -2121,6 +2542,9 @@ async def admin_upload_product_keys(
         product = await conn.fetchrow("select id from products where id = $1", data.product_id)
         if not product:
             raise HTTPException(status_code=404, detail="Product not found.")
+        duration = await fetch_product_duration(conn, data.product_id, data.duration_days)
+        if not duration:
+            raise HTTPException(status_code=400, detail="This product duration is not available.")
         rows = await conn.fetch(
             """
             insert into product_keys (product_id, duration_days, key_value, uploaded_by)
@@ -2234,32 +2658,37 @@ async def admin_create_product(
     data: ProductIn,
     admin: Annotated[asyncpg.Record, Depends(admin_user)],
 ) -> dict[str, Any]:
+    durations = normalize_product_durations(data)
+    price_1_day, price_7_days, price_30_days = legacy_prices_for_product(data, durations)
     async with connection() as conn:
-        row = await conn.fetchrow(
-            """
-            insert into products (
-                category_key, name, description, feature_text, video_url, panel_url,
-                image_url, price_1_day, price_7_days, price_30_days,
-                stock_status, stock_quantity, active
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                insert into products (
+                    category_key, name, description, feature_text, video_url, panel_url,
+                    image_url, price_1_day, price_7_days, price_30_days,
+                    stock_status, stock_quantity, active
+                )
+                values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                returning *
+                """,
+                data.category_key,
+                data.name,
+                data.description,
+                data.feature_text,
+                data.video_url,
+                data.panel_url,
+                data.image_url,
+                price_1_day,
+                price_7_days,
+                price_30_days,
+                data.stock_status,
+                data.stock_quantity,
+                data.active,
             )
-            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            returning *
-            """,
-            data.category_key,
-            data.name,
-            data.description,
-            data.feature_text,
-            data.video_url,
-            data.panel_url,
-            data.image_url,
-            data.price_1_day,
-            data.price_7_days,
-            data.price_30_days,
-            data.stock_status,
-            data.stock_quantity,
-            data.active,
-        )
-    return {"product": jsonable(row)}
+            await replace_product_durations(conn, row["id"], durations)
+            product = (await attach_product_durations(conn, [row]))[0]
+    return {"product": jsonable(product)}
 
 
 @app.put("/api/admin/products/{product_id}")
@@ -2268,45 +2697,51 @@ async def admin_update_product(
     data: ProductIn,
     admin: Annotated[asyncpg.Record, Depends(admin_user)],
 ) -> dict[str, Any]:
+    durations = normalize_product_durations(data)
+    price_1_day, price_7_days, price_30_days = legacy_prices_for_product(data, durations)
     async with connection() as conn:
-        row = await conn.fetchrow(
-            """
-            update products
-               set category_key = $2,
-                   name = $3,
-                   description = $4,
-                   feature_text = $5,
-                   video_url = $6,
-                   panel_url = $7,
-                   image_url = $8,
-                   price_1_day = $9,
-                   price_7_days = $10,
-                   price_30_days = $11,
-                   stock_status = $12,
-                   stock_quantity = $13,
-                   active = $14,
-                   updated_at = now()
-             where id = $1
-         returning *
-            """,
-            product_id,
-            data.category_key,
-            data.name,
-            data.description,
-            data.feature_text,
-            data.video_url,
-            data.panel_url,
-            data.image_url,
-            data.price_1_day,
-            data.price_7_days,
-            data.price_30_days,
-            data.stock_status,
-            data.stock_quantity,
-            data.active,
-        )
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                update products
+                   set category_key = $2,
+                       name = $3,
+                       description = $4,
+                       feature_text = $5,
+                       video_url = $6,
+                       panel_url = $7,
+                       image_url = $8,
+                       price_1_day = $9,
+                       price_7_days = $10,
+                       price_30_days = $11,
+                       stock_status = $12,
+                       stock_quantity = $13,
+                       active = $14,
+                       updated_at = now()
+                 where id = $1
+             returning *
+                """,
+                product_id,
+                data.category_key,
+                data.name,
+                data.description,
+                data.feature_text,
+                data.video_url,
+                data.panel_url,
+                data.image_url,
+                price_1_day,
+                price_7_days,
+                price_30_days,
+                data.stock_status,
+                data.stock_quantity,
+                data.active,
+            )
+            if row:
+                await replace_product_durations(conn, row["id"], durations)
+                product = (await attach_product_durations(conn, [row]))[0]
     if not row:
         raise HTTPException(status_code=404, detail="Product not found.")
-    return {"product": jsonable(row)}
+    return {"product": jsonable(product)}
 
 
 @app.delete("/api/admin/products/{product_id}")

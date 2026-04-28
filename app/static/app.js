@@ -154,6 +154,20 @@ function appLogoMarkup(sizeClass = "") {
   return `<span class="app-logo ${sizeClass}">${currencyIcon()}</span>`;
 }
 
+function moneyAvatar(user, name) {
+  const photo = user?.photo_url
+    ? `<img src="${escapeHtml(user.photo_url)}" alt="${escapeHtml(name)}" />`
+    : initials(name);
+  return `
+    <div class="avatar money-avatar">
+      <span class="money-chip money-chip-1">$</span>
+      <span class="money-chip money-chip-2">$</span>
+      <span class="money-chip money-chip-3">$</span>
+      <span class="avatar-inner">${photo}</span>
+    </div>
+  `;
+}
+
 function statusBadge(status) {
   const map = {
     approved: "success",
@@ -168,11 +182,90 @@ function statusBadge(status) {
   return `<span class="badge ${map[status] || ""}">${escapeHtml(status || "active")}</span>`;
 }
 
+function durationOptions(product) {
+  if (!product) return [];
+  let durations = product.durations || [];
+  if (typeof durations === "string") {
+    try {
+      durations = JSON.parse(durations);
+    } catch {
+      durations = [];
+    }
+  }
+  if (!Array.isArray(durations) || !durations.length) {
+    durations = [
+      { duration_days: 1, price: product.price_1_day || 0, sort_order: 10 },
+      { duration_days: 7, price: product.price_7_days || 0, sort_order: 20 },
+      { duration_days: 30, price: product.price_30_days || 0, sort_order: 30 },
+    ];
+  }
+  const byDays = new Map();
+  durations.forEach((duration, index) => {
+    const days = Number(duration.duration_days || duration.days || 0);
+    if (days > 0) {
+      byDays.set(days, {
+        duration_days: days,
+        price: Number(duration.price || 0),
+        sort_order: Number(duration.sort_order || (index + 1) * 10),
+      });
+    }
+  });
+  return [...byDays.values()].sort((a, b) => (a.sort_order - b.sort_order) || (a.duration_days - b.duration_days));
+}
+
+function durationLabel(days) {
+  const clean = Number(days || 0);
+  return clean === 1 ? "1 Day" : `${clean} Days`;
+}
+
 function priceFor(product, duration) {
-  if (!product) return 0;
-  if (duration === 7) return product.price_7_days;
-  if (duration === 30) return product.price_30_days;
-  return product.price_1_day;
+  const found = durationOptions(product).find((item) => Number(item.duration_days) === Number(duration));
+  return found ? found.price : 0;
+}
+
+function firstDuration(product) {
+  return durationOptions(product)[0]?.duration_days || 1;
+}
+
+function durationLines(product) {
+  return durationOptions(product)
+    .map((duration) => `${duration.duration_days}=${Number(duration.price || 0).toFixed(2)}`)
+    .join("\n");
+}
+
+function parseDurationLines(value) {
+  const parsed = [];
+  String(value || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .forEach((line, index) => {
+      const parts = line.split(/[=:,\s]+/).filter(Boolean);
+      const days = Number(parts[0]);
+      const price = Number(parts[1]);
+      if (days > 0 && price >= 0) {
+        parsed.push({ duration_days: days, price, sort_order: (index + 1) * 10 });
+      }
+    });
+  return parsed;
+}
+
+function keyCountText(product) {
+  let counts = product?.key_counts || [];
+  if (typeof counts === "string") {
+    try {
+      counts = JSON.parse(counts);
+    } catch {
+      counts = [];
+    }
+  }
+  const byDay = new Map((Array.isArray(counts) ? counts : []).map((item) => [Number(item.duration_days), item]));
+  return durationOptions(product)
+    .map((duration) => {
+      const count = byDay.get(Number(duration.duration_days));
+      return `${durationLabel(duration.duration_days)} ${Number(count?.available || 0)}`;
+    })
+    .join(" / ") || `Available ${Number(product?.available_keys || 0)}`;
 }
 
 function videoEmbed(url) {
@@ -358,7 +451,7 @@ async function setRoute(route) {
 async function openProduct(id) {
   const data = await api(`/api/products/${id}`);
   state.product = data.product;
-  state.selectedDuration = 1;
+  state.selectedDuration = firstDuration(state.product);
   state.route = "product";
   render();
 }
@@ -412,7 +505,7 @@ function topbar() {
   return `
     <header class="topbar">
       <div class="profile-chip">
-        <div class="avatar">${appLogoMarkup("header-logo")}</div>
+        ${moneyAvatar(user, name)}
         <div>
           <h2>${escapeHtml(name)}</h2>
           <p>${state.session?.is_admin ? "ADMIN" : "CUSTOMER"}</p>
@@ -420,7 +513,7 @@ function topbar() {
       </div>
       <button class="balance-chip" data-action="set-route" data-route="profile" aria-label="Wallet balance">
         <span>Balance</span>
-        <strong>${icon("wallet")} ${currencyIcon()} ${compactMoney(user.wallet_balance)}</strong>
+        <strong>${icon("wallet")} ${compactMoney(user.wallet_balance)}</strong>
       </button>
     </header>
   `;
@@ -543,7 +636,7 @@ function renderProductList(products) {
             <h4>${escapeHtml(product.name)}</h4>
             <p>${escapeHtml(product.description || product.category_name || "")}</p>
             <div class="price-row">
-              <span class="price">${money(product.price_1_day)}</span>
+              <span class="price">${money(priceFor(product, firstDuration(product)))}</span>
               ${product.stock_status ? `<span class="badge success">In stock</span>` : `<span class="badge danger">Out</span>`}
             </div>
           </div>
@@ -581,6 +674,7 @@ function renderProductDetail() {
   const product = state.product;
   if (!product) return `<div class="empty">Product not found</div>`;
   const duration = state.selectedDuration;
+  const durations = durationOptions(product);
   return `
     <section class="panel">
       ${productImage(product.image_url, product.name, "detail-hero")}
@@ -602,16 +696,16 @@ function renderProductDetail() {
     </section>
     <div class="section-head"><h3>Duration</h3></div>
     <section class="duration-list">
-      ${[1, 7, 30].map((days) => `
-        <article class="duration-card">
+      ${durations.map((option) => `
+        <article class="duration-card ${Number(duration) === Number(option.duration_days) ? "active" : ""}">
           <div>
-            <h4>${days === 1 ? "1 Day" : `${days} Days`}</h4>
-            <p>${days} days</p>
+            <h4>${durationLabel(option.duration_days)}</h4>
+            <p>${option.duration_days} days</p>
           </div>
-          <strong class="price">${money(priceFor(product, days))}</strong>
-          <button class="action-btn" data-action="quick-buy" data-duration="${days}" type="button">${icon("shopping-cart")} Buy</button>
+          <strong class="price">${money(option.price)}</strong>
+          <button class="action-btn" data-action="quick-buy" data-duration="${option.duration_days}" type="button">${icon("shopping-cart")} Buy</button>
         </article>
-      `).join("")}
+      `).join("") || `<div class="empty">No duration set for this product</div>`}
     </section>
   `;
 }
@@ -631,10 +725,10 @@ function renderCheckout() {
         <button class="icon-btn" data-action="open-product" data-id="${product.id}" type="button">${icon("x")}</button>
       </div>
       <div class="checkout-product">
-        ${productImage(product.image_url, product.name)}
+          ${productImage(product.image_url, product.name)}
         <div>
           <h3>${escapeHtml(product.name)}</h3>
-          <p>${duration} Day access</p>
+          <p>${durationLabel(duration)} access</p>
           <strong>${money(amount)}</strong>
         </div>
       </div>
@@ -677,7 +771,7 @@ function renderCheckout() {
           </div>
           <div class="invoice-line">
             <span>${icon("clock")} Duration</span>
-            <strong>${duration} Day</strong>
+            <strong>${durationLabel(duration)}</strong>
           </div>
           <div class="invoice-line">
             <span>${icon("smartphone")} Method</span>
@@ -835,7 +929,7 @@ function renderOrders() {
         <article class="order-card">
           <div class="status-row"><h4>${escapeHtml(order.invoice_id)}</h4>${statusBadge(order.status)}</div>
           <div>${escapeHtml(order.product_name || "Product")}</div>
-          <div class="muted">${order.duration_days} Day - ${money(order.total)} - ${shortDate(order.created_at)}</div>
+          <div class="muted">${durationLabel(order.duration_days)} - ${money(order.total)} - ${shortDate(order.created_at)}</div>
           ${order.delivery_text ? `<div class="notice"><strong>Delivery</strong><p>${escapeHtml(order.delivery_text)}</p></div>` : ""}
         </article>
       `).join("") : `<div class="empty">No orders yet</div>`}
@@ -920,6 +1014,9 @@ function renderSpin() {
 }
 
 function renderCouponPage() {
+  const durationChoices = [...new Map(
+    state.products.flatMap((product) => durationOptions(product)).map((duration) => [duration.duration_days, duration])
+  ).values()].sort((a, b) => a.duration_days - b.duration_days);
   return `
     <div class="section-head"><h3>Coupon</h3><button data-action="set-route" data-route="profile">Back</button></div>
     <form class="panel form-grid" id="coupon-check-form">
@@ -936,9 +1033,7 @@ function renderCouponPage() {
       <div class="field">
         <label>Duration</label>
         <select name="duration_days">
-          <option value="1">1 Day</option>
-          <option value="7">7 Days</option>
-          <option value="30">30 Days</option>
+          ${durationChoices.map((duration) => `<option value="${duration.duration_days}">${durationLabel(duration.duration_days)}</option>`).join("") || `<option value="1">1 Day</option>`}
         </select>
       </div>
       <button class="action-btn" type="submit">${icon("badge-percent")} Check Coupon</button>
@@ -1419,12 +1514,12 @@ function renderAdminProducts() {
       <div class="field"><label>Video URL / YouTube URL</label><input name="video_url" value="${escapeHtml(edit?.video_url || "")}" /></div>
       <div class="field"><label>Panel file/link URL</label><input name="panel_url" value="${escapeHtml(edit?.panel_url || "")}" /></div>
       <div class="field"><label>Product image upload</label><input name="image_file" type="file" accept="image/*" /></div>
-      <div class="two-col">
-        <div class="field"><label>1 Day price</label><input name="price_1_day" type="number" step="0.01" min="0" required value="${escapeHtml(edit?.price_1_day ?? "")}" /></div>
-        <div class="field"><label>7 Days price</label><input name="price_7_days" type="number" step="0.01" min="0" required value="${escapeHtml(edit?.price_7_days ?? "")}" /></div>
+      <div class="field">
+        <label>Custom days and prices</label>
+        <textarea name="duration_prices" required placeholder="1=5.00&#10;7=20.00&#10;30=50.00&#10;60=80.00">${escapeHtml(durationLines(edit) || "1=0.00\n7=0.00\n30=0.00")}</textarea>
+        <small class="muted">Write one duration per line: days=price. Example: 3=2.50</small>
       </div>
       <div class="two-col">
-        <div class="field"><label>30 Days price</label><input name="price_30_days" type="number" step="0.01" min="0" required value="${escapeHtml(edit?.price_30_days ?? "")}" /></div>
         <div class="field"><label>Stock on/off</label><select name="stock_status"><option value="true" ${edit?.stock_status !== false ? "selected" : ""}>On</option><option value="false" ${edit?.stock_status === false ? "selected" : ""}>Off</option></select></div>
       </div>
       <button class="action-btn" type="submit">${icon(edit ? "save" : "plus")} ${edit ? "Save Product" : "Add Product"}</button>
@@ -1435,8 +1530,8 @@ function renderAdminProducts() {
       ${products.map((product) => `
         <article class="admin-row">
           <div class="status-row"><h4>${escapeHtml(product.name)}</h4>${product.stock_status ? `<span class="badge success">Stock</span>` : `<span class="badge danger">Off</span>`}</div>
-          <div class="muted">${escapeHtml(product.category_name || product.category_key)} - ${money(product.price_1_day)} / ${money(product.price_7_days)} / ${money(product.price_30_days)}</div>
-          <div class="muted">Keys: 1D ${Number(product.available_1_day_keys || 0)} - 7D ${Number(product.available_7_day_keys || 0)} - 30D ${Number(product.available_30_day_keys || 0)}</div>
+          <div class="muted">${escapeHtml(product.category_name || product.category_key)} - ${durationOptions(product).map((duration) => `${durationLabel(duration.duration_days)} ${money(duration.price)}`).join(" / ")}</div>
+          <div class="muted">Keys: ${keyCountText(product)}</div>
           <div class="two-col">
             <button class="action-btn secondary" data-action="edit-product" data-id="${product.id}" type="button">${icon("pencil")} Edit</button>
             <button class="action-btn secondary" data-action="manage-product-keys" data-id="${product.id}" type="button">${icon("key-round")} Keys</button>
@@ -1453,22 +1548,27 @@ function renderAdminKeys() {
   const products = data.products || [];
   const keys = data.keys || [];
   const selectedId = state.keyProductId ? String(state.keyProductId) : "";
-  const selectedDuration = Number(state.keyDurationDays || 1);
+  const selectedDuration = state.keyDurationDays ? Number(state.keyDurationDays) : "";
+  const selectedProduct = products.find((product) => String(product.id) === selectedId) || products[0] || null;
+  const allDurationChoices = [...new Map(
+    products.flatMap((product) => durationOptions(product)).map((duration) => [duration.duration_days, duration])
+  ).values()].sort((a, b) => a.duration_days - b.duration_days);
+  const filterDurationChoices = selectedId && selectedProduct ? durationOptions(selectedProduct) : allDurationChoices;
+  const uploadDurationChoices = selectedProduct ? durationOptions(selectedProduct) : allDurationChoices;
   return `
     <form class="panel form-grid" id="admin-key-filter-form">
       <div class="field">
         <label>View keys for product</label>
         <select name="product_id">
           <option value="">All products</option>
-          ${products.map((product) => `<option value="${product.id}" ${String(product.id) === selectedId ? "selected" : ""}>${escapeHtml(product.name)} (1D ${Number(product.available_1_day_keys || 0)} / 7D ${Number(product.available_7_day_keys || 0)} / 30D ${Number(product.available_30_day_keys || 0)})</option>`).join("")}
+          ${products.map((product) => `<option value="${product.id}" ${String(product.id) === selectedId ? "selected" : ""}>${escapeHtml(product.name)} (${keyCountText(product)})</option>`).join("")}
         </select>
       </div>
       <div class="field">
         <label>Duration bucket</label>
         <select name="duration_days">
-          <option value="1" ${selectedDuration === 1 ? "selected" : ""}>1 Day Keys</option>
-          <option value="7" ${selectedDuration === 7 ? "selected" : ""}>7 Days Keys</option>
-          <option value="30" ${selectedDuration === 30 ? "selected" : ""}>30 Days Keys</option>
+          <option value="" ${selectedDuration === "" ? "selected" : ""}>All durations</option>
+          ${filterDurationChoices.map((duration) => `<option value="${duration.duration_days}" ${selectedDuration === Number(duration.duration_days) ? "selected" : ""}>${durationLabel(duration.duration_days)} Keys</option>`).join("")}
         </select>
       </div>
       <button class="action-btn secondary" type="submit">${icon("list-filter")} Load Keys</button>
@@ -1483,9 +1583,7 @@ function renderAdminKeys() {
       <div class="field">
         <label>Upload to duration</label>
         <select name="duration_days" required>
-          <option value="1" ${selectedDuration === 1 ? "selected" : ""}>1 Day</option>
-          <option value="7" ${selectedDuration === 7 ? "selected" : ""}>7 Days</option>
-          <option value="30" ${selectedDuration === 30 ? "selected" : ""}>30 Days</option>
+          ${uploadDurationChoices.map((duration) => `<option value="${duration.duration_days}" ${selectedDuration === Number(duration.duration_days) ? "selected" : ""}>${durationLabel(duration.duration_days)}</option>`).join("")}
         </select>
       </div>
       <div class="field">
@@ -1499,7 +1597,7 @@ function renderAdminKeys() {
       ${keys.map((key) => `
         <article class="admin-row">
           <div class="status-row"><h4>${escapeHtml(key.product_name)}</h4>${statusBadge(key.status)}</div>
-          <div class="muted">${Number(key.duration_days || 1)} Day - ${escapeHtml(key.category_name || "No section")} - ${shortDate(key.created_at)}</div>
+          <div class="muted">${durationLabel(key.duration_days)} - ${escapeHtml(key.category_name || "No section")} - ${shortDate(key.created_at)}</div>
           <div class="key-value">${escapeHtml(key.key_value)}</div>
           ${key.invoice_id ? `<div class="muted">Delivered to ${escapeHtml(key.first_name || key.username || key.telegram_id || "user")} - Invoice ${escapeHtml(key.invoice_id)}</div>` : ""}
           <button class="action-btn danger" data-action="delete-product-key" data-id="${key.id}" type="button">${icon("trash-2")} Delete Key</button>
@@ -1517,7 +1615,7 @@ function renderAdminOrders() {
         <article class="admin-row">
           <div class="status-row"><h4>${escapeHtml(order.invoice_id)}</h4>${statusBadge(order.status)}</div>
           <div>${escapeHtml(order.first_name)} - ${escapeHtml(order.product_name || "Product")}</div>
-          <div class="muted">${money(order.total)} - ${order.duration_days} Day - ${shortDate(order.created_at)}</div>
+          <div class="muted">${money(order.total)} - ${durationLabel(order.duration_days)} - ${shortDate(order.created_at)}</div>
           <div class="two-col">
             <button class="action-btn secondary" data-action="approve-order" data-id="${order.id}" type="button">${icon("check")} Approve</button>
             <button class="action-btn" data-action="deliver-order" data-id="${order.id}" type="button">${icon("package-check")} Deliver</button>
@@ -2071,8 +2169,10 @@ document.addEventListener("click", async (event) => {
       render();
     }
     if (action === "manage-product-keys") {
+      const list = state.admin.products?.products || [];
+      const product = list.find((item) => String(item.id) === String(button.dataset.id));
       state.keyProductId = Number(button.dataset.id);
-      state.keyDurationDays = 1;
+      state.keyDurationDays = firstDuration(product);
       await loadAdminData("keys");
       render();
     }
@@ -2301,6 +2401,12 @@ document.addEventListener("submit", async (event) => {
       event.preventDefault();
       const data = new FormData(form);
       const imageFromFile = await fileToDataUrl(data.get("image_file"));
+      const durations = parseDurationLines(data.get("duration_prices"));
+      if (!durations.length) {
+        toast("Add at least one duration like 1=5.00");
+        return;
+      }
+      const priceForPayload = (days) => durations.find((duration) => Number(duration.duration_days) === days)?.price || 0;
       const payload = {
         category_key: data.get("category_key"),
         name: data.get("name"),
@@ -2309,9 +2415,10 @@ document.addEventListener("submit", async (event) => {
         video_url: data.get("video_url") || "",
         panel_url: data.get("panel_url") || "",
         image_url: imageFromFile || data.get("image_url") || "",
-        price_1_day: Number(data.get("price_1_day")),
-        price_7_days: Number(data.get("price_7_days")),
-        price_30_days: Number(data.get("price_30_days")),
+        price_1_day: priceForPayload(1),
+        price_7_days: priceForPayload(7),
+        price_30_days: priceForPayload(30),
+        durations,
         stock_status: data.get("stock_status") === "true",
         stock_quantity: data.get("stock_quantity") ? Number(data.get("stock_quantity")) : null,
         active: true,
@@ -2348,7 +2455,8 @@ document.addEventListener("submit", async (event) => {
       const formData = new FormData(form);
       const value = formData.get("product_id");
       state.keyProductId = value ? Number(value) : null;
-      state.keyDurationDays = Number(formData.get("duration_days") || 1);
+      const durationValue = formData.get("duration_days");
+      state.keyDurationDays = durationValue ? Number(durationValue) : null;
       await loadAdminData("keys");
       render();
     }
