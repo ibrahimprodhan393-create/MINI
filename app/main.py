@@ -11,7 +11,7 @@ from typing import Annotated, Any
 
 import asyncpg
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -48,6 +48,41 @@ class AutoPaymentConfirmIn(BaseModel):
     payment_id: int | None = None
     transaction_id: str | None = Field(default=None, max_length=120)
     amount: Decimal | None = Field(default=None, gt=0)
+
+
+def auto_confirm_value(payload: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = payload.get(key)
+        if value is not None and str(value).strip() != "":
+            return value
+    return None
+
+
+async def parse_auto_confirm_payload(request: Request) -> AutoPaymentConfirmIn:
+    payload: dict[str, Any] = dict(request.query_params)
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" in content_type:
+        body = await request.json() if request.headers.get("content-length") not in {None, "0"} else {}
+        if isinstance(body, dict):
+            payload.update(body)
+    elif "form" in content_type:
+        form = await request.form()
+        payload.update(dict(form))
+    normalized = {
+        "payment_id": auto_confirm_value(payload, "payment_id", "paymentId", "id"),
+        "transaction_id": auto_confirm_value(
+            payload,
+            "transaction_id",
+            "transactionId",
+            "txid",
+            "utr",
+            "reference",
+            "reference_id",
+            "trx_id",
+        ),
+        "amount": auto_confirm_value(payload, "amount", "payment_amount", "value", "total"),
+    }
+    return AutoPaymentConfirmIn(**normalized)
 
 
 class OrderCreateIn(BaseModel):
@@ -1807,6 +1842,8 @@ async def approve_payment_request_locked(
             payment_id,
             auto_order["id"],
         )
+        reviewed = await conn.fetchrow("select * from payment_requests where id = $1", payment_id)
+        updated_user = await conn.fetchrow("select * from users where id = $1", payment["user_id"])
 
     return {
         "payment": payment,
@@ -2318,7 +2355,9 @@ async def create_payment(
             duration = await fetch_product_duration(conn, data.product_id, data.duration_days)
             if not duration:
                 raise HTTPException(status_code=400, detail="This product duration is not available.")
-        transaction_id = (data.transaction_id or "").strip() or f"MANUAL-{secrets.token_hex(4).upper()}"
+        is_auto_method = method["method_type"] == "auto"
+        reference_prefix = "AUTO" if is_auto_method else "MANUAL"
+        transaction_id = (data.transaction_id or "").strip() or f"{reference_prefix}-{secrets.token_hex(4).upper()}"
         payment = await conn.fetchrow(
             """
             insert into payment_requests (
@@ -2338,14 +2377,15 @@ async def create_payment(
             data.duration_days,
             data.coupon_code,
         )
+    status_label = "Auto verification pending" if is_auto_method else "Pending"
     await notifier.notify_admins(
-        f"Payment pending\nUser: {user['first_name']} ({user['telegram_id']})\nAmount: {data.amount}\nTXID: {transaction_id}"
+        f"{status_label}\nUser: {user['first_name']} ({user['telegram_id']})\nAmount: {data.amount}\nMethod: {method['name']}\nTXID: {transaction_id}\nPayment ID: {payment['id']}"
     )
     await notifier.send_message(
         user["telegram_id"],
-        f"Payment request submitted\nAmount: <b>{data.amount}</b>\nStatus: Pending",
+        f"Payment request submitted\nAmount: <b>{data.amount}</b>\nStatus: {status_label}\nPayment ID: <code>{payment['id']}</code>",
     )
-    return {"payment": jsonable(payment)}
+    return {"payment": jsonable(payment), "auto": is_auto_method}
 
 
 @app.get("/api/payments")
@@ -3330,13 +3370,19 @@ async def admin_delete_rejected_payment(
 
 @app.post("/api/auto-payments/confirm")
 async def auto_confirm_payment(
-    data: AutoPaymentConfirmIn,
+    request: Request,
     x_auto_payment_secret: Annotated[str | None, Header(alias="X-Auto-Payment-Secret")] = None,
+    secret: str | None = Query(default=None),
 ) -> dict[str, Any]:
     if not settings.auto_payment_webhook_secret:
         raise HTTPException(status_code=503, detail="Auto payment webhook is not configured.")
-    if x_auto_payment_secret != settings.auto_payment_webhook_secret:
+    provided_secret = x_auto_payment_secret or secret
+    if provided_secret != settings.auto_payment_webhook_secret:
         raise HTTPException(status_code=403, detail="Invalid auto payment secret.")
+    try:
+        data = await parse_auto_confirm_payload(request)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid auto payment payload: {exc}") from exc
 
     async with connection() as conn:
         async with conn.transaction():
@@ -3361,9 +3407,20 @@ async def auto_confirm_payment(
                 )
                 if not payment_id:
                     raise HTTPException(status_code=404, detail="Pending auto payment not found.")
-            result = await approve_payment_request_locked(conn, payment_id, None)
-            if result["payment"]["method_type"] != "auto":
+            method_type = await conn.fetchval(
+                """
+                select pm.method_type
+                  from payment_requests p
+                  join payment_methods pm on pm.id = p.method_id
+                 where p.id = $1
+                """,
+                payment_id,
+            )
+            if not method_type:
+                raise HTTPException(status_code=404, detail="Payment not found.")
+            if method_type != "auto":
                 raise HTTPException(status_code=400, detail="Payment method is not auto.")
+            result = await approve_payment_request_locked(conn, payment_id, None)
 
     payment = result["payment"]
     updated_user = result["updated_user"]

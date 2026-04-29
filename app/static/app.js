@@ -150,6 +150,10 @@ function paymentMethodTitle(method) {
   return name;
 }
 
+function isAutoMethod(method) {
+  return String(method?.method_type || "").toLowerCase() === "auto";
+}
+
 function appLogoMarkup(sizeClass = "") {
   const logo = state.branding?.logo_url || state.dashboard?.branding?.logo_url || "";
   if (logo) return `<img class="app-logo ${sizeClass}" src="${escapeHtml(logo)}" alt="App logo" />`;
@@ -757,6 +761,7 @@ function renderCheckout() {
   const user = state.dashboard?.user || state.session?.user || {};
   const wallet = Number(user.wallet_balance || 0);
   const selected = state.methods.find((method) => String(method.id) === String(state.selectedPaymentMethodId)) || state.methods[0] || null;
+  const selectedIsAuto = isAutoMethod(selected);
   return `
     <section class="panel checkout-card">
       <div class="status-row">
@@ -782,7 +787,7 @@ function renderCheckout() {
         <span>${icon("smartphone")}</span>
         <strong>Select Payment Method</strong>
       </div>
-      <p class="muted">Active methods only. Admin approval will create the order automatically.</p>
+      <p class="muted">Active methods only. Auto methods wait for transfer confirmation; manual methods wait for admin approval.</p>
       <div class="table-lite">
         ${state.methods.map((method) => `
           <button class="payment-option ${String(method.id) === String(state.selectedPaymentMethodId) ? "active" : ""}" data-action="select-payment-method" data-id="${method.id}" type="button">
@@ -827,15 +832,15 @@ function renderCheckout() {
             ${selected.instructions ? `<p class="invoice-note">${escapeHtml(selected.instructions)}</p>` : ""}
           </div>
           ${selected.qr_image_url ? `<img class="screenshot" src="${escapeHtml(selected.qr_image_url)}" alt="${escapeHtml(selected.name)} QR" />` : ""}
-          <div class="field"><label>Transaction ID / UTR</label><input name="transaction_id" required autocomplete="off" placeholder="Enter UTR or reference number" /></div>
+          <div class="field"><label>Transaction ID / UTR${selectedIsAuto ? " (optional)" : ""}</label><input name="transaction_id" ${selectedIsAuto ? "" : "required"} autocomplete="off" placeholder="${selectedIsAuto ? "Auto reference or leave empty" : "Enter UTR or reference number"}" /></div>
           <div class="field">
-            <label>Payment Screenshot</label>
+            <label>Payment Screenshot${selectedIsAuto ? " (optional)" : ""}</label>
             <label class="upload-drop">
-              <input name="screenshot" type="file" accept="image/*" capture="environment" required />
+              <input name="screenshot" type="file" accept="image/*" capture="environment" ${selectedIsAuto ? "" : "required"} />
               <span>${icon("upload-cloud")} Click to upload screenshot</span>
             </label>
           </div>
-          <button class="action-btn submit-payment-btn" type="submit">${icon("check-circle")} Submit Product Payment (${money(amount)})</button>
+          <button class="action-btn submit-payment-btn" type="submit">${icon("check-circle")} ${selectedIsAuto ? "Start Auto Verification" : "Submit Product Payment"} (${money(amount)})</button>
         </form>
       ` : ""}
     </section>
@@ -874,6 +879,7 @@ function renderPaymentForm() {
   }
   const amount = Number(state.selectedFundAmount || fundPresets[0] || 100);
   const payAmount = textMoney(amount);
+  const selectedIsAuto = isAutoMethod(selected);
   return `
     <section class="panel add-funds-card" id="add-fund-panel">
       <div class="card-title">
@@ -891,7 +897,7 @@ function renderPaymentForm() {
           </button>
         `).join("")}
       </div>
-      <p class="muted strong-line">${currencyIcon()} Manual payment - select amount:</p>
+      <p class="muted strong-line">${currencyIcon()} Select amount:</p>
       <div class="fund-amount-grid">
         ${fundPresets.map((preset) => `
           <button class="fund-amount-card ${Number(amount) === Number(preset) ? "active" : ""}" data-action="start-fund-payment" data-amount="${preset}" type="button">
@@ -944,17 +950,17 @@ function renderPaymentForm() {
         </div>
         ${selected.qr_image_url ? `<img class="screenshot" src="${escapeHtml(selected.qr_image_url)}" alt="${escapeHtml(selected.name)} QR" />` : ""}
         <div class="field">
-          <label>Transaction ID / UTR</label>
-          <input name="transaction_id" autocomplete="off" placeholder="Enter UTR or reference number" />
+          <label>Transaction ID / UTR${selectedIsAuto ? " (optional)" : ""}</label>
+          <input name="transaction_id" autocomplete="off" placeholder="${selectedIsAuto ? "Auto reference or leave empty" : "Enter UTR or reference number"}" />
         </div>
         <div class="field">
-          <label>Payment Screenshot</label>
+          <label>Payment Screenshot${selectedIsAuto ? " (optional)" : ""}</label>
           <label class="upload-drop">
-            <input name="screenshot" type="file" accept="image/*" capture="environment" required />
+            <input name="screenshot" type="file" accept="image/*" capture="environment" ${selectedIsAuto ? "" : "required"} />
             <span>${icon("upload-cloud")} Click to upload screenshot</span>
           </label>
         </div>
-        <button class="action-btn submit-payment-btn" type="submit">${icon("check-circle")} Submit Payment (${escapeHtml(payAmount)})</button>
+        <button class="action-btn submit-payment-btn" type="submit">${icon("check-circle")} ${selectedIsAuto ? "Start Auto Verification" : "Submit Payment"} (${escapeHtml(payAmount)})</button>
       </form>
     </section>` : ""}
   `;
@@ -2354,7 +2360,8 @@ document.addEventListener("submit", async (event) => {
       event.preventDefault();
       const data = new FormData(form);
       const screenshot = await fileToDataUrl(data.get("screenshot"));
-      await api("/api/payments", {
+      const method = state.methods.find((item) => String(item.id) === String(data.get("method_id")));
+      const result = await api("/api/payments", {
         method: "POST",
         body: {
           amount: Number(data.get("amount")),
@@ -2363,7 +2370,7 @@ document.addEventListener("submit", async (event) => {
           screenshot_data: screenshot || null,
         },
       });
-      toast("Payment submitted");
+      toast(isAutoMethod(method) ? `Auto payment created #${result.payment?.id || ""}. Waiting for confirmation.` : "Payment submitted");
       await setRoute("profile");
     }
     if (form.id === "language-form") {
@@ -2401,7 +2408,8 @@ document.addEventListener("submit", async (event) => {
       const data = new FormData(form);
       const screenshot = await fileToDataUrl(data.get("screenshot"));
       const product = state.product || state.checkout?.product;
-      await api("/api/payments", {
+      const method = state.methods.find((item) => String(item.id) === String(data.get("method_id") || state.selectedPaymentMethodId));
+      const result = await api("/api/payments", {
         method: "POST",
         body: {
           amount: Number(priceFor(product, state.selectedDuration)),
@@ -2413,7 +2421,7 @@ document.addEventListener("submit", async (event) => {
           coupon_code: state.checkout?.coupon_code || null,
         },
       });
-      toast("Payment submitted. Order will be created after approval.");
+      toast(isAutoMethod(method) ? `Auto payment created #${result.payment?.id || ""}. Order will be placed after confirmation.` : "Payment submitted. Order will be created after approval.");
       await setRoute("orders");
     }
     if (form.id === "ticket-form") {

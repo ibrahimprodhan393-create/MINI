@@ -9,12 +9,12 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 - Home dashboard: wallet, orders, subscriptions, notices, categories, products
 - Product categories: Android, iPhone, PC, Root Device, Premium Tools, Subscription Plans
 - Nested sections/sub-sections controlled from admin
-- Product details: image, name, feature panel, video/YouTube embed, panel link, stock, 1/7/30 day prices, coupon, buy
-- Product key store: admins upload/delete 1 Day, 7 Days, and 30 Days keys, file links, or panel login lines per product
+- Product details: image, name, feature panel, video/YouTube embed, panel link, stock, custom day prices, coupon, buy
+- Product key store: admins upload/delete keys, file links, or panel login lines for each custom duration bucket
 - Wallet: add balance request, payment method, transaction ID, screenshot upload
 - Account screen: add fund, payment details, payment request status, realistic daily spin, language, referral dashboard, support, profile, currency, reseller apply
 - Add Fund shows admin payment methods as selectable cards, opens payment address/details with copy button, then submits amount and screenshot
-- ACI AI asks users to select an AI language first, then answers Mini App questions in English
+- ACI AI asks users to select an AI language first, can use an OpenAI-compatible API for general questions, and falls back to built-in store answers
 - AI Assistant reads payment history from `payment_requests`, the same table used by wallet payment submissions
 - AI Assistant has a safe fallback answer if optional history queries fail on an older database
 - AI Assistant has built-in answers even without custom knowledge; admin custom knowledge can still override or extend answers
@@ -25,7 +25,7 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 - Manual payments stay admin-approved, and auto payments can be confirmed by a secure webhook
 - Rejected payments can be removed from the admin panel
 - Automatic delivery: if a stored key is available, paid orders are delivered instantly
-- Automatic delivery picks the stored key from the matching 1/7/30 day bucket
+- Automatic delivery picks the stored key from the matching custom duration bucket
 - Admin payment method editor: name, instructions, account details, logo, QR image, active/off
 - Payment methods support custom names, active/off status, logo upload/URL, QR image, and user-side display only when active
 - Orders: invoice ID, pending, approved, delivered, cancelled, refund on cancel
@@ -77,6 +77,9 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
    AUTO_PAYMENT_WEBHOOK_SECRET
    ADMIN_TELEGRAM_IDS
    PUBLIC_APP_URL
+   AI_API_KEY
+   AI_API_URL
+   AI_MODEL
    AUTO_MIGRATE=true
    DEBUG=false
    ```
@@ -160,3 +163,5 @@ You can also match by transaction ID and amount:
   "amount": 10
 }
 ```
+
+If the payment provider cannot send custom headers, send the same request with `?secret=your-secret`. The endpoint accepts JSON, form data, or query parameters. Supported transaction fields include `transaction_id`, `txid`, `utr`, `reference`, `reference_id`, and `trx_id`.
