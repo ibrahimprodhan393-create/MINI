@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import random
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from time import monotonic
 from typing import Annotated, Any
 
 import asyncpg
@@ -259,6 +260,13 @@ def referral_code(telegram_id: int) -> str:
     return f"ref_{telegram_id}"
 
 
+def referral_link_for_user(user: asyncpg.Record | dict[str, Any]) -> str:
+    code = row_value(user, "referral_code", "")
+    if settings.bot_username and settings.mini_app_short_name:
+        return f"https://t.me/{settings.bot_username}/{settings.mini_app_short_name}?startapp={code}"
+    return code
+
+
 LEGACY_DURATIONS = (1, 7, 30)
 
 
@@ -324,8 +332,40 @@ def legacy_prices_for_product(data: ProductIn, durations: list[dict[str, Any]]) 
 
 
 MAX_SPIN_BONUS = Decimal("0.05")
+RUNTIME_CACHE_DEFAULT_TTL = 25
+USER_SEEN_WRITE_INTERVAL = timedelta(seconds=90)
+_RUNTIME_CACHE: dict[str, tuple[float, Any]] = {}
+
 PRODUCT_DURATIONS_SCHEMA_READY = False
 PRODUCT_KEYS_SCHEMA_READY = False
+PAYMENT_METHOD_SCHEMA_READY = False
+USER_PREFERENCES_SCHEMA_READY = False
+SPIN_SCHEMA_READY = False
+
+
+def cache_get(key: str) -> Any | None:
+    item = _RUNTIME_CACHE.get(key)
+    if not item:
+        return None
+    expires_at, value = item
+    if expires_at <= monotonic():
+        _RUNTIME_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def cache_set(key: str, value: Any, ttl: int = RUNTIME_CACHE_DEFAULT_TTL) -> Any:
+    _RUNTIME_CACHE[key] = (monotonic() + ttl, value)
+    return value
+
+
+def clear_runtime_cache(prefix: str | None = None) -> None:
+    if prefix is None:
+        _RUNTIME_CACHE.clear()
+        return
+    for key in list(_RUNTIME_CACHE.keys()):
+        if key.startswith(prefix):
+            _RUNTIME_CACHE.pop(key, None)
 
 
 SUPPORT_SETTING_DEFAULTS = {
@@ -354,6 +394,13 @@ BRANDING_SETTING_DEFAULTS = {
     "app_logo_url": "",
 }
 
+ALL_SETTING_DEFAULTS = (
+    SUPPORT_SETTING_DEFAULTS
+    | RESELLER_SETTING_DEFAULTS
+    | AI_ASSISTANT_SETTING_DEFAULTS
+    | BRANDING_SETTING_DEFAULTS
+)
+
 
 def normalize_telegram_username(value: str) -> str:
     clean = value.strip()
@@ -370,17 +417,11 @@ def normalize_telegram_username(value: str) -> str:
     return clean
 
 
-async def fetch_contact_settings(
-    conn: asyncpg.Connection,
-    defaults: dict[str, str],
+def contact_settings_from_values(
+    values: dict[str, str],
     prefix: str,
     fallback_name: str,
 ) -> dict[str, Any]:
-    rows = await conn.fetch(
-        "select key, value from app_settings where key = any($1::text[])",
-        list(defaults.keys()),
-    )
-    values = defaults | {row["key"]: row["value"] for row in rows}
     username = normalize_telegram_username(values[f"{prefix}_telegram_username"])
     user_id = values[f"{prefix}_telegram_user_id"].strip()
     return {
@@ -393,6 +434,46 @@ async def fetch_contact_settings(
     }
 
 
+def ai_settings_from_values(values: dict[str, str]) -> dict[str, Any]:
+    return {
+        "intro": values["ai_assistant_intro"].strip() or AI_ASSISTANT_SETTING_DEFAULTS["ai_assistant_intro"],
+        "custom_knowledge": values["ai_assistant_custom_knowledge"].strip(),
+        "enabled": values["ai_assistant_enabled"].lower() == "true",
+    }
+
+
+def branding_settings_from_values(values: dict[str, str]) -> dict[str, Any]:
+    return {"logo_url": values["app_logo_url"].strip()}
+
+
+async def fetch_public_settings_bundle(conn: asyncpg.Connection) -> dict[str, Any]:
+    cached = cache_get("settings:public")
+    if cached is not None:
+        return cached
+    rows = await conn.fetch(
+        "select key, value from app_settings where key = any($1::text[])",
+        list(ALL_SETTING_DEFAULTS.keys()),
+    )
+    values = ALL_SETTING_DEFAULTS | {row["key"]: row["value"] for row in rows}
+    bundle = {
+        "support": contact_settings_from_values(values, "support", "Store Support"),
+        "reseller": contact_settings_from_values(values, "reseller", "Reseller Manager"),
+        "assistant": ai_settings_from_values(values),
+        "branding": branding_settings_from_values(values),
+    }
+    return cache_set("settings:public", bundle, 30)
+
+
+async def fetch_contact_settings(
+    conn: asyncpg.Connection,
+    defaults: dict[str, str],
+    prefix: str,
+    fallback_name: str,
+) -> dict[str, Any]:
+    bundle = await fetch_public_settings_bundle(conn)
+    return bundle[prefix]
+
+
 async def fetch_support_settings(conn: asyncpg.Connection) -> dict[str, Any]:
     return await fetch_contact_settings(conn, SUPPORT_SETTING_DEFAULTS, "support", "Store Support")
 
@@ -402,25 +483,13 @@ async def fetch_reseller_settings(conn: asyncpg.Connection) -> dict[str, Any]:
 
 
 async def fetch_ai_assistant_settings(conn: asyncpg.Connection) -> dict[str, Any]:
-    rows = await conn.fetch(
-        "select key, value from app_settings where key = any($1::text[])",
-        list(AI_ASSISTANT_SETTING_DEFAULTS.keys()),
-    )
-    values = AI_ASSISTANT_SETTING_DEFAULTS | {row["key"]: row["value"] for row in rows}
-    return {
-        "intro": values["ai_assistant_intro"].strip() or AI_ASSISTANT_SETTING_DEFAULTS["ai_assistant_intro"],
-        "custom_knowledge": values["ai_assistant_custom_knowledge"].strip(),
-        "enabled": values["ai_assistant_enabled"].lower() == "true",
-    }
+    bundle = await fetch_public_settings_bundle(conn)
+    return bundle["assistant"]
 
 
 async def fetch_branding_settings(conn: asyncpg.Connection) -> dict[str, Any]:
-    rows = await conn.fetch(
-        "select key, value from app_settings where key = any($1::text[])",
-        list(BRANDING_SETTING_DEFAULTS.keys()),
-    )
-    values = BRANDING_SETTING_DEFAULTS | {row["key"]: row["value"] for row in rows}
-    return {"logo_url": values["app_logo_url"].strip()}
+    bundle = await fetch_public_settings_bundle(conn)
+    return bundle["branding"]
 
 
 async def save_app_settings(conn: asyncpg.Connection, payload: dict[str, str]) -> None:
@@ -436,14 +505,124 @@ async def save_app_settings(conn: asyncpg.Connection, payload: dict[str, str]) -
             key,
             value,
         )
+    clear_runtime_cache("settings:")
 
 
 async def ensure_user_preferences_runtime_schema(conn: asyncpg.Connection) -> None:
+    global USER_PREFERENCES_SCHEMA_READY
+    if USER_PREFERENCES_SCHEMA_READY:
+        return
     await conn.execute("alter table users add column if not exists selected_language text not null default 'en'")
+    USER_PREFERENCES_SCHEMA_READY = True
 
 
 async def ensure_payment_method_runtime_schema(conn: asyncpg.Connection) -> None:
+    global PAYMENT_METHOD_SCHEMA_READY
+    if PAYMENT_METHOD_SCHEMA_READY:
+        return
     await conn.execute("alter table payment_methods add column if not exists logo_url text not null default ''")
+    PAYMENT_METHOD_SCHEMA_READY = True
+
+
+async def fetch_active_currencies(conn: asyncpg.Connection) -> list[dict[str, Any]]:
+    cached = cache_get("currencies:active")
+    if cached is not None:
+        return cached
+    rows = await conn.fetch(
+        """
+        select code, symbol, name, rate_from_base, active, sort_order
+          from currencies
+         where active = true
+         order by sort_order, code
+        """
+    )
+    return cache_set("currencies:active", jsonable(rows), 60)
+
+
+async def fetch_selected_currency(conn: asyncpg.Connection, code: str) -> dict[str, Any] | None:
+    currencies = await fetch_active_currencies(conn)
+    selected = next((currency for currency in currencies if currency["code"] == code), None)
+    if selected:
+        return selected
+    row = await conn.fetchrow(
+        """
+        select code, symbol, name, rate_from_base, active, sort_order
+          from currencies
+         where code = $1 and active = true
+        """,
+        code,
+    )
+    return jsonable(row) if row else None
+
+
+async def fetch_active_payment_methods(conn: asyncpg.Connection) -> list[dict[str, Any]]:
+    cached = cache_get("payment_methods:active")
+    if cached is not None:
+        return cached
+    await ensure_payment_method_runtime_schema(conn)
+    rows = await conn.fetch(
+        """
+        select id, name, instructions, method_type, account_label, account_value,
+               logo_url, qr_image_url, active, sort_order
+          from payment_methods
+         where active = true
+         order by sort_order, name
+        """
+    )
+    return cache_set("payment_methods:active", jsonable(rows), 20)
+
+
+async def fetch_root_categories(conn: asyncpg.Connection) -> list[dict[str, Any]]:
+    cached = cache_get("categories:root")
+    if cached is not None:
+        return cached
+    rows = await conn.fetch(
+        """
+        select key, name, icon, description, parent_key, sort_order, active
+          from categories
+         where active = true
+           and parent_key is null
+         order by sort_order, name
+        """
+    )
+    return cache_set("categories:root", jsonable(rows), 30)
+
+
+async def fetch_child_categories(conn: asyncpg.Connection, parent: str | None) -> list[dict[str, Any]]:
+    if not parent:
+        return await fetch_root_categories(conn)
+    key = f"categories:children:{parent}"
+    cached = cache_get(key)
+    if cached is not None:
+        return cached
+    rows = await conn.fetch(
+        """
+        select key, name, icon, description, parent_key, sort_order, active
+          from categories
+         where active = true and parent_key = $1
+         order by sort_order, name
+        """,
+        parent,
+    )
+    return cache_set(key, jsonable(rows), 30)
+
+
+async def fetch_active_notices(conn: asyncpg.Connection) -> list[dict[str, Any]]:
+    cached = cache_get("notices:active")
+    if cached is not None:
+        return cached
+    rows = await conn.fetch(
+        """
+        select id, title, body, active, starts_at, ends_at, created_at
+          from notices
+         where active = true
+           and (starts_at is null or starts_at <= now())
+           and (ends_at is null or ends_at >= now())
+         order by created_at desc
+         limit 3
+        """
+    )
+    return cache_set("notices:active", jsonable(rows), 15)
 
 
 async def drop_duration_check_constraints(conn: asyncpg.Connection) -> None:
@@ -1108,6 +1287,9 @@ async def run_schema() -> None:
 
 
 async def ensure_spin_runtime_schema(conn: asyncpg.Connection) -> None:
+    global SPIN_SCHEMA_READY
+    if SPIN_SCHEMA_READY:
+        return
     await conn.execute("alter table users add column if not exists next_spin_at timestamptz")
     await conn.execute(
         """
@@ -1180,6 +1362,23 @@ async def ensure_spin_runtime_schema(conn: asyncpg.Connection) -> None:
     await conn.execute("update spin_prizes set amount = 0.03, weight = 8, sort_order = 40 where title = 'Lucky Reward'")
     await conn.execute("update spin_prizes set amount = 0.05, weight = 2, sort_order = 50 where title = 'Mega Reward'")
     await conn.execute("update spin_prizes set amount = least(amount, $1)", MAX_SPIN_BONUS)
+    SPIN_SCHEMA_READY = True
+
+
+async def fetch_spin_prizes(conn: asyncpg.Connection) -> list[dict[str, Any]]:
+    cached = cache_get("spin:prizes")
+    if cached is not None:
+        return cached
+    await ensure_spin_runtime_schema(conn)
+    rows = await conn.fetch(
+        """
+        select id, title, amount, weight, active, sort_order, created_at
+          from spin_prizes
+         where active = true
+         order by sort_order, amount
+        """
+    )
+    return cache_set("spin:prizes", jsonable(rows), 30)
 
 
 async def ensure_product_keys_runtime_schema(conn: asyncpg.Connection) -> None:
@@ -1231,6 +1430,19 @@ async def upsert_telegram_user(
 
     existing = await conn.fetchrow("select * from users where telegram_id = $1", telegram_id)
     if existing:
+        last_seen = existing["last_seen_at"]
+        if last_seen and last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=UTC)
+        should_touch = last_seen is None or datetime.now(UTC) - last_seen > USER_SEEN_WRITE_INTERVAL
+        profile_changed = (
+            existing["first_name"] != first_name
+            or existing["last_name"] != last_name
+            or existing["username"] != username
+            or existing["photo_url"] != photo_url
+            or (is_admin and not existing["is_admin"])
+        )
+        if not should_touch and not profile_changed:
+            return existing
         return await conn.fetchrow(
             """
             update users
@@ -1239,7 +1451,7 @@ async def upsert_telegram_user(
                    username = $4,
                    photo_url = $5,
                    is_admin = case when $6 then true else is_admin end,
-                   last_seen_at = now()
+                   last_seen_at = case when $7 then now() else last_seen_at end
              where telegram_id = $1
          returning *
             """,
@@ -1249,11 +1461,12 @@ async def upsert_telegram_user(
             username,
             photo_url,
             is_admin,
+            should_touch,
         )
 
     if start_param:
         referrer = await conn.fetchrow(
-            "select * from users where referral_code = $1 and telegram_id <> $2",
+            "select id from users where referral_code = $1 and telegram_id <> $2",
             start_param,
             telegram_id,
         )
@@ -1347,7 +1560,7 @@ async def compute_coupon_discount(
         return None, Decimal("0")
     coupon = await conn.fetchrow(
         """
-        select *
+        select id, code, discount_type, discount_value, expires_at, active, max_uses, used_count, created_at
           from coupons
          where lower(code) = lower($1)
            and active = true
@@ -1437,10 +1650,11 @@ async def place_wallet_order_locked(
     duration_days: int,
     coupon_code: str | None,
 ) -> tuple[asyncpg.Record, Decimal, asyncpg.Record | None]:
-    fresh_user = await conn.fetchrow("select * from users where id = $1 for update", user_id)
+    fresh_user = await conn.fetchrow("select id, wallet_balance from users where id = $1 for update", user_id)
     product = await conn.fetchrow(
         """
-        select p.*, c.name as category_name
+        select p.id, p.name, p.category_key, p.image_url, p.video_url,
+               p.stock_status, p.stock_quantity, c.name as category_name
           from products p
           join categories c on c.key = p.category_key
          where p.id = $1 and p.active = true
@@ -1668,26 +1882,8 @@ async def session(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dic
 @app.get("/api/dashboard")
 async def dashboard(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dict[str, Any]:
     async with connection() as conn:
-        categories = await conn.fetch(
-            """
-            select *
-              from categories
-             where active = true
-               and parent_key is null
-             order by sort_order, name
-            """
-        )
-        notices = await conn.fetch(
-            """
-            select *
-              from notices
-             where active = true
-               and (starts_at is null or starts_at <= now())
-               and (ends_at is null or ends_at >= now())
-             order by created_at desc
-             limit 3
-            """
-        )
+        categories = await fetch_root_categories(conn)
+        notices = await fetch_active_notices(conn)
         stats = await conn.fetchrow(
             """
             select
@@ -1701,25 +1897,21 @@ async def dashboard(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
             """,
             user["id"],
         )
-        currency = await conn.fetchrow(
-            "select * from currencies where code = $1 and active = true",
-            user["selected_currency"],
-        )
-        currencies = await conn.fetch(
-            "select * from currencies where active = true order by sort_order, code"
-        )
-        support_settings = await fetch_support_settings(conn)
-        reseller_settings = await fetch_reseller_settings(conn)
-        ai_settings = await fetch_ai_assistant_settings(conn)
-        branding = await fetch_branding_settings(conn)
+        currencies = await fetch_active_currencies(conn)
+        currency = next((item for item in currencies if item["code"] == user["selected_currency"]), None)
+        settings_bundle = await fetch_public_settings_bundle(conn)
+        support_settings = settings_bundle["support"]
+        reseller_settings = settings_bundle["reseller"]
+        ai_settings = settings_bundle["assistant"]
+        branding = settings_bundle["branding"]
     return {
         "user": jsonable(user),
         "stats": jsonable(stats),
-        "categories": jsonable(categories),
+        "categories": categories,
         "products": [],
-        "notices": jsonable(notices),
-        "currency": jsonable(currency),
-        "currencies": jsonable(currencies),
+        "notices": notices,
+        "currency": currency,
+        "currencies": currencies,
         "support": jsonable(support_settings),
         "reseller": jsonable(reseller_settings),
         "assistant": jsonable({"intro": ai_settings["intro"], "enabled": ai_settings["enabled"]}),
@@ -1733,47 +1925,28 @@ async def categories(
     parent: str | None = None,
 ) -> dict[str, Any]:
     async with connection() as conn:
-        if parent:
-            rows = await conn.fetch(
-                """
-                select * from categories
-                 where active = true and parent_key = $1
-                 order by sort_order, name
-                """,
-                parent,
-            )
-        else:
-            rows = await conn.fetch(
-                """
-                select * from categories
-                 where active = true and parent_key is null
-                 order by sort_order, name
-                """
-            )
-    return {"categories": jsonable(rows)}
+        rows = await fetch_child_categories(conn, parent)
+    return {"categories": rows}
 
 
 @app.get("/api/payment-methods")
 async def payment_methods(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dict[str, Any]:
     async with connection() as conn:
-        await ensure_payment_method_runtime_schema(conn)
-        rows = await conn.fetch(
-            "select * from payment_methods where active = true order by sort_order, name"
-        )
-    return {"methods": jsonable(rows)}
+        rows = await fetch_active_payment_methods(conn)
+    return {"methods": rows}
 
 
 @app.get("/api/support-settings")
 async def support_settings(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dict[str, Any]:
     async with connection() as conn:
-        support = await fetch_support_settings(conn)
+        support = (await fetch_public_settings_bundle(conn))["support"]
     return {"support": jsonable(support)}
 
 
 @app.get("/api/reseller-settings")
 async def reseller_settings(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dict[str, Any]:
     async with connection() as conn:
-        reseller = await fetch_reseller_settings(conn)
+        reseller = (await fetch_public_settings_bundle(conn))["reseller"]
     return {"reseller": jsonable(reseller)}
 
 
@@ -1810,10 +1983,7 @@ async def assistant_chat(
     }
     async with connection() as conn:
         try:
-            currency = await conn.fetchrow(
-                "select * from currencies where code = $1 and active = true",
-                user["selected_currency"],
-            )
+            currency = await fetch_selected_currency(conn, user["selected_currency"])
         except Exception:
             currency = None
         try:
@@ -1873,17 +2043,24 @@ async def assistant_chat(
             orders = []
         try:
             await ensure_payment_method_runtime_schema(conn)
-            methods = list(await conn.fetch("select * from payment_methods where active = true order by sort_order, name"))
+            methods = await fetch_active_payment_methods(conn)
         except Exception:
             methods = []
         try:
-            categories = list(await conn.fetch(
-                "select * from categories where active = true and parent_key is null order by sort_order, name limit 8"
-            ))
+            categories = (await fetch_root_categories(conn))[:8]
         except Exception:
             categories = []
         try:
-            products = list(await conn.fetch("select * from products where active = true order by created_at desc limit 6"))
+            products = list(await conn.fetch(
+                """
+                select id, name, category_key, price_1_day, price_7_days, price_30_days,
+                       stock_status, stock_quantity, active, created_at
+                  from products
+                 where active = true
+                 order by created_at desc
+                 limit 6
+                """
+            ))
         except Exception:
             products = []
         try:
@@ -1949,12 +2126,9 @@ async def assistant_chat(
 @app.get("/api/currencies")
 async def currencies(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dict[str, Any]:
     async with connection() as conn:
-        rows = await conn.fetch("select * from currencies where active = true order by sort_order, code")
-        selected = await conn.fetchrow(
-            "select * from currencies where code = $1 and active = true",
-            user["selected_currency"],
-        )
-    return {"currencies": jsonable(rows), "selected": jsonable(selected)}
+        rows = await fetch_active_currencies(conn)
+        selected = next((currency for currency in rows if currency["code"] == user["selected_currency"]), None)
+    return {"currencies": rows, "selected": selected}
 
 
 @app.post("/api/profile/currency")
@@ -1964,10 +2138,7 @@ async def set_currency(
 ) -> dict[str, Any]:
     code = data.code.strip().upper()
     async with connection() as conn:
-        currency = await conn.fetchrow(
-            "select * from currencies where code = $1 and active = true",
-            code,
-        )
+        currency = await fetch_selected_currency(conn, code)
         if not currency:
             raise HTTPException(status_code=404, detail="Currency not found.")
         updated = await conn.fetchrow(
@@ -1975,7 +2146,7 @@ async def set_currency(
             user["id"],
             code,
         )
-    return {"user": jsonable(updated), "currency": jsonable(currency)}
+    return {"user": jsonable(updated), "currency": currency}
 
 
 @app.post("/api/profile/language")
@@ -1999,22 +2170,30 @@ async def products(
     category: str | None = None,
     search: str | None = None,
 ) -> dict[str, Any]:
+    cache_key = f"products:list:{category or ''}:{(search or '').strip().lower()}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return {"products": cached}
     async with connection() as conn:
         rows = await conn.fetch(
             """
-            select p.*, c.name as category_name
+            select p.id, p.category_key, p.name, p.description, p.image_url,
+                   p.price_1_day, p.price_7_days, p.price_30_days,
+                   p.stock_status, p.stock_quantity, p.active, p.created_at,
+                   c.name as category_name
               from products p
               join categories c on c.key = p.category_key
              where p.active = true
                and ($1::text is null or p.category_key = $1)
                and ($2::text is null or p.name ilike '%' || $2 || '%')
              order by p.created_at desc
+             limit 80
             """,
             category,
             search,
         )
         products_with_prices = await attach_product_durations(conn, rows)
-    return {"products": jsonable(products_with_prices)}
+    return {"products": cache_set(cache_key, jsonable(products_with_prices), 15)}
 
 
 @app.get("/api/products/{product_id}")
@@ -2022,10 +2201,18 @@ async def product_detail(
     product_id: int,
     user: Annotated[asyncpg.Record, Depends(current_user)],
 ) -> dict[str, Any]:
+    cache_key = f"products:detail:{product_id}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return {"product": cached}
     async with connection() as conn:
         row = await conn.fetchrow(
             """
-            select p.*, c.name as category_name
+            select p.id, p.category_key, p.name, p.description, p.feature_text,
+                   p.video_url, p.panel_url, p.image_url,
+                   p.price_1_day, p.price_7_days, p.price_30_days,
+                   p.stock_status, p.stock_quantity, p.active, p.created_at, p.updated_at,
+                   c.name as category_name
               from products p
               join categories c on c.key = p.category_key
              where p.id = $1 and p.active = true
@@ -2035,7 +2222,7 @@ async def product_detail(
         products_with_prices = await attach_product_durations(conn, [row] if row else [])
     if not row:
         raise HTTPException(status_code=404, detail="Product not found.")
-    return {"product": jsonable(products_with_prices[0])}
+    return {"product": cache_set(cache_key, jsonable(products_with_prices[0]), 15)}
 
 
 @app.post("/api/coupons/validate")
@@ -2088,10 +2275,11 @@ async def my_orders(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
         rows = await conn.fetch(
             """
             select o.*, coalesce(p.name, o.product_snapshot->>'name', 'Product') as product_name, p.image_url
-              from orders o
+             from orders o
               left join products p on p.id = o.product_id
              where o.user_id = $1
              order by o.created_at desc
+             limit 80
             """,
             user["id"],
         )
@@ -2102,7 +2290,13 @@ async def my_orders(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
 async def wallet_transactions(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dict[str, Any]:
     async with connection() as conn:
         rows = await conn.fetch(
-            "select * from wallet_transactions where user_id = $1 order by created_at desc limit 80",
+            """
+            select id, type, amount, balance_after, reference_type, reference_id, note, created_at
+              from wallet_transactions
+             where user_id = $1
+             order by created_at desc
+             limit 80
+            """,
             user["id"],
         )
     return {"transactions": jsonable(rows)}
@@ -2115,7 +2309,7 @@ async def create_payment(
 ) -> dict[str, Any]:
     async with connection() as conn:
         method = await conn.fetchrow(
-            "select * from payment_methods where id = $1 and active = true",
+            "select id, name, method_type from payment_methods where id = $1 and active = true",
             data.method_id,
         )
         if not method:
@@ -2158,7 +2352,15 @@ async def create_payment(
 async def my_payments(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dict[str, Any]:
     async with connection() as conn:
         rows = await conn.fetch(
-            "select * from payment_requests where user_id = $1 order by created_at desc",
+            """
+            select id, amount, method_id, method_name, transaction_id, status,
+                   rejection_reason, reviewed_at, checkout_product_id,
+                   checkout_duration_days, checkout_coupon_code, auto_order_id, created_at
+              from payment_requests
+             where user_id = $1
+             order by created_at desc
+             limit 80
+            """,
             user["id"],
         )
     return {"payments": jsonable(rows)}
@@ -2169,11 +2371,13 @@ async def referrals(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
     async with connection() as conn:
         rows = await conn.fetch(
             """
-            select r.*, u.first_name, u.username, u.photo_url
+            select r.id, r.bonus_amount, r.status, r.created_at,
+                   u.first_name, u.username, u.photo_url
               from referrals r
               join users u on u.id = r.referred_user_id
              where r.referrer_user_id = $1
              order by r.created_at desc
+             limit 80
             """,
             user["id"],
         )
@@ -2187,13 +2391,9 @@ async def referrals(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
             """,
             user["id"],
         )
-    if settings.bot_username and settings.mini_app_short_name:
-        link = f"https://t.me/{settings.bot_username}/{settings.mini_app_short_name}?startapp={user['referral_code']}"
-    else:
-        link = user["referral_code"]
     return {
         "referral_code": user["referral_code"],
-        "referral_link": link,
+        "referral_link": referral_link_for_user(user),
         "referrals": jsonable(rows),
         "summary": jsonable(summary),
         "bonus_per_referral": jsonable(settings.referral_bonus),
@@ -2204,11 +2404,15 @@ async def referrals(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
 async def spin_info(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dict[str, Any]:
     async with connection() as conn:
         await ensure_spin_runtime_schema(conn)
-        prizes = await conn.fetch(
-            "select * from spin_prizes where active = true order by sort_order, amount"
-        )
+        prizes = await fetch_spin_prizes(conn)
         history = await conn.fetch(
-            "select * from spin_history where user_id = $1 order by created_at desc limit 20",
+            """
+            select id, prize_id, prize_title, amount, created_at
+              from spin_history
+             where user_id = $1
+             order by created_at desc
+             limit 20
+            """,
             user["id"],
         )
         lock = await conn.fetchrow(
@@ -2222,8 +2426,8 @@ async def spin_info(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
         )
     prize_list = []
     for prize in prizes:
-        item = jsonable(prize)
-        item["amount"] = jsonable(min(Decimal(prize["amount"]), MAX_SPIN_BONUS))
+        item = dict(prize)
+        item["amount"] = jsonable(min(Decimal(str(prize["amount"])), MAX_SPIN_BONUS))
         prize_list.append(item)
     return {
         "prizes": prize_list,
@@ -2231,6 +2435,104 @@ async def spin_info(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
         "spins_left": 1 if lock and lock["can_spin"] else 0,
         "next_spin_at": jsonable(lock["next_spin_at"] if lock else None),
         "max_bonus": jsonable(MAX_SPIN_BONUS),
+    }
+
+
+@app.get("/api/account")
+async def account_bundle(user: Annotated[asyncpg.Record, Depends(current_user)]) -> dict[str, Any]:
+    async with connection() as conn:
+        settings_bundle = await fetch_public_settings_bundle(conn)
+        methods = await fetch_active_payment_methods(conn)
+        payments = await conn.fetch(
+            """
+            select id, amount, method_id, method_name, transaction_id, status,
+                   rejection_reason, reviewed_at, checkout_product_id,
+                   checkout_duration_days, checkout_coupon_code, auto_order_id, created_at
+              from payment_requests
+             where user_id = $1
+             order by created_at desc
+             limit 40
+            """,
+            user["id"],
+        )
+        transactions = await conn.fetch(
+            """
+            select id, type, amount, balance_after, reference_type, reference_id, note, created_at
+              from wallet_transactions
+             where user_id = $1
+             order by created_at desc
+             limit 60
+            """,
+            user["id"],
+        )
+        referral_rows = await conn.fetch(
+            """
+            select r.id, r.bonus_amount, r.status, r.created_at,
+                   u.first_name, u.username, u.photo_url
+              from referrals r
+              join users u on u.id = r.referred_user_id
+             where r.referrer_user_id = $1
+             order by r.created_at desc
+             limit 60
+            """,
+            user["id"],
+        )
+        referral_summary = await conn.fetchrow(
+            """
+            select count(*) as total_referrals,
+                   coalesce(sum(bonus_amount) filter (where status = 'rewarded'), 0) as total_earned,
+                   coalesce(sum(bonus_amount) filter (where status <> 'rewarded'), 0) as pending_earned
+              from referrals
+             where referrer_user_id = $1
+            """,
+            user["id"],
+        )
+        await ensure_spin_runtime_schema(conn)
+        prizes = await fetch_spin_prizes(conn)
+        spin_history = await conn.fetch(
+            """
+            select id, prize_id, prize_title, amount, created_at
+              from spin_history
+             where user_id = $1
+             order by created_at desc
+             limit 12
+            """,
+            user["id"],
+        )
+        spin_lock = await conn.fetchrow(
+            """
+            select next_spin_at,
+                   (next_spin_at is null or next_spin_at <= now()) as can_spin
+              from users
+             where id = $1
+            """,
+            user["id"],
+        )
+    prize_list = []
+    for prize in prizes:
+        item = dict(prize)
+        item["amount"] = jsonable(min(Decimal(str(prize["amount"])), MAX_SPIN_BONUS))
+        prize_list.append(item)
+    return {
+        "methods": methods,
+        "payments": jsonable(payments),
+        "transactions": jsonable(transactions),
+        "support": jsonable(settings_bundle["support"]),
+        "reseller": jsonable(settings_bundle["reseller"]),
+        "referrals": {
+            "referral_code": user["referral_code"],
+            "referral_link": referral_link_for_user(user),
+            "referrals": jsonable(referral_rows),
+            "summary": jsonable(referral_summary),
+            "bonus_per_referral": jsonable(settings.referral_bonus),
+        },
+        "spin": {
+            "prizes": prize_list,
+            "history": jsonable(spin_history),
+            "spins_left": 1 if spin_lock and spin_lock["can_spin"] else 0,
+            "next_spin_at": jsonable(spin_lock["next_spin_at"] if spin_lock else None),
+            "max_bonus": jsonable(MAX_SPIN_BONUS),
+        },
     }
 
 
@@ -2251,14 +2553,14 @@ async def spin_play(user: Annotated[asyncpg.Record, Depends(current_user)]) -> d
             )
             if locked_user and not locked_user["can_spin"]:
                 raise HTTPException(status_code=400, detail=f"Spin locked until {locked_user['next_spin_at']}.")
-            prizes = await conn.fetch("select * from spin_prizes where active = true")
+            prizes = await fetch_spin_prizes(conn)
             if not prizes:
                 raise HTTPException(status_code=404, detail="No spin prizes configured.")
-            weighted: list[asyncpg.Record] = []
+            weighted: list[dict[str, Any]] = []
             for prize in prizes:
                 weighted.extend([prize] * max(1, int(prize["weight"])))
             prize = random.choice(weighted)
-            amount = min(Decimal(prize["amount"]), MAX_SPIN_BONUS).quantize(Decimal("0.01"))
+            amount = min(Decimal(str(prize["amount"])), MAX_SPIN_BONUS).quantize(Decimal("0.01"))
             if amount > 0:
                 updated_user = await conn.fetchrow(
                     """
@@ -2606,6 +2908,8 @@ async def admin_create_category(
             data.sort_order,
             data.active,
         )
+    clear_runtime_cache("categories:")
+    clear_runtime_cache("products:")
     return {"category": jsonable(row)}
 
 
@@ -2636,6 +2940,8 @@ async def admin_update_category(
             data.sort_order,
             data.active,
         )
+    clear_runtime_cache("categories:")
+    clear_runtime_cache("products:")
     if not row:
         raise HTTPException(status_code=404, detail="Category not found.")
     return {"category": jsonable(row)}
@@ -2648,6 +2954,8 @@ async def admin_delete_category(
 ) -> dict[str, str]:
     async with connection() as conn:
         result = await conn.execute("delete from categories where key = $1", category_key)
+    clear_runtime_cache("categories:")
+    clear_runtime_cache("products:")
     if result.endswith("0"):
         raise HTTPException(status_code=404, detail="Category not found.")
     return {"status": "deleted"}
@@ -2688,6 +2996,7 @@ async def admin_create_product(
             )
             await replace_product_durations(conn, row["id"], durations)
             product = (await attach_product_durations(conn, [row]))[0]
+    clear_runtime_cache("products:")
     return {"product": jsonable(product)}
 
 
@@ -2741,6 +3050,7 @@ async def admin_update_product(
                 product = (await attach_product_durations(conn, [row]))[0]
     if not row:
         raise HTTPException(status_code=404, detail="Product not found.")
+    clear_runtime_cache("products:")
     return {"product": jsonable(product)}
 
 
@@ -2751,6 +3061,7 @@ async def admin_delete_product(
 ) -> dict[str, str]:
     async with connection() as conn:
         result = await conn.execute("delete from products where id = $1", product_id)
+    clear_runtime_cache("products:")
     if result.endswith("0"):
         raise HTTPException(status_code=404, detail="Product not found.")
     return {"status": "deleted"}
@@ -2884,6 +3195,7 @@ async def admin_create_payment_method(
             data.active,
             data.sort_order,
         )
+    clear_runtime_cache("payment_methods:")
     return {"method": jsonable(row)}
 
 
@@ -2921,6 +3233,7 @@ async def admin_update_payment_method(
             data.active,
             data.sort_order,
         )
+    clear_runtime_cache("payment_methods:")
     if not row:
         raise HTTPException(status_code=404, detail="Payment method not found.")
     return {"method": jsonable(row)}
@@ -2933,6 +3246,7 @@ async def admin_delete_payment_method(
 ) -> dict[str, str]:
     async with connection() as conn:
         result = await conn.execute("delete from payment_methods where id = $1", method_id)
+    clear_runtime_cache("payment_methods:")
     if result.endswith("0"):
         raise HTTPException(status_code=404, detail="Payment method not found.")
     return {"status": "deleted"}
@@ -3484,6 +3798,7 @@ async def admin_broadcast(
                 data.notice_title,
                 data.message,
             )
+            clear_runtime_cache("notices:")
     sent = 0
     for recipient in recipients:
         await notifier.send_message(recipient["telegram_id"], data.message)

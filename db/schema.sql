@@ -274,15 +274,23 @@ create table if not exists spin_history (
 );
 
 create index if not exists idx_categories_parent on categories(parent_key, sort_order);
+create index if not exists idx_categories_active_parent on categories(active, parent_key, sort_order, name);
 create index if not exists idx_products_category on products(category_key);
+create index if not exists idx_products_active_category_created on products(active, category_key, created_at desc);
 create unique index if not exists idx_product_durations_unique on product_durations(product_id, duration_days);
 create index if not exists idx_product_durations_product on product_durations(product_id, sort_order, duration_days);
+create index if not exists idx_payment_methods_active_sort on payment_methods(active, sort_order, name);
+create index if not exists idx_currencies_active_sort on currencies(active, sort_order, code);
 create index if not exists idx_orders_user on orders(user_id, created_at desc);
 create index if not exists idx_product_keys_product_duration_status on product_keys(product_id, duration_days, status, created_at);
 create index if not exists idx_product_keys_product_status on product_keys(product_id, status, created_at);
 create index if not exists idx_payment_requests_status on payment_requests(status, created_at desc);
+create index if not exists idx_payment_requests_user_created on payment_requests(user_id, created_at desc);
 create index if not exists idx_wallet_transactions_user on wallet_transactions(user_id, created_at desc);
+create index if not exists idx_referrals_referrer_created on referrals(referrer_user_id, created_at desc);
+create index if not exists idx_spin_history_user_created on spin_history(user_id, created_at desc);
 create index if not exists idx_support_tickets_user on support_tickets(user_id, updated_at desc);
+create index if not exists idx_notices_active_starts on notices(active, starts_at desc);
 
 insert into categories (key, name, icon, description, parent_key, sort_order) values
     ('devices', 'Devices', 'home', 'Browse device sections', null, 10),

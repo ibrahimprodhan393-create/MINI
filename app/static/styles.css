@@ -60,7 +60,7 @@ button {
   background:
     linear-gradient(135deg, rgba(255, 49, 72, 0.09) 0 1px, transparent 1px 12px),
     linear-gradient(180deg, #0b0c12 0%, #07080d 42%, #05060a 100%);
-  background-attachment: fixed;
+  background-attachment: scroll;
 }
 
 .splash {
@@ -103,6 +103,34 @@ button {
 main {
   display: grid;
   gap: 12px;
+}
+
+.route-loading {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  height: 3px;
+  margin: 0 -12px 8px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.route-loading span {
+  display: block;
+  width: 42%;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), var(--teal));
+  animation: loading-slide 0.85s ease-in-out infinite;
+}
+
+@keyframes loading-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(260%);
+  }
 }
 
 .topbar {

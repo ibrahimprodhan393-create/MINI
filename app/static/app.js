@@ -3,6 +3,7 @@ const tg = window.Telegram?.WebApp;
 
 const state = {
   route: "home",
+  loadingRoute: "",
   session: null,
   dashboard: null,
   currency: null,
@@ -49,6 +50,7 @@ const state = {
 let mainButtonBound = false;
 let mainButtonHandler = null;
 let backButtonHandler = null;
+const responseCache = new Map();
 
 const languageOptions = [
   ["en", "English"],
@@ -291,13 +293,22 @@ function supportTelegramUrl(support) {
 }
 
 async function api(path, options = {}) {
-  const headers = { Accept: "application/json", ...(options.headers || {}) };
-  if (tg?.initData) headers["X-Telegram-Init-Data"] = tg.initData;
-  if (options.body && !(options.body instanceof FormData)) {
-    headers["Content-Type"] = "application/json";
-    options.body = JSON.stringify(options.body);
+  const { cacheMs = 0, force = false, ...fetchOptions } = options;
+  const method = String(fetchOptions.method || "GET").toUpperCase();
+  const cacheKey = `${method}:${path}`;
+  if (method === "GET" && cacheMs && !force) {
+    const cached = responseCache.get(cacheKey);
+    if (cached && cached.expires > Date.now()) {
+      return JSON.parse(JSON.stringify(cached.payload));
+    }
   }
-  const response = await fetch(path, { ...options, headers });
+  const headers = { Accept: "application/json", ...(fetchOptions.headers || {}) };
+  if (tg?.initData) headers["X-Telegram-Init-Data"] = tg.initData;
+  if (fetchOptions.body && !(fetchOptions.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+    fetchOptions.body = JSON.stringify(fetchOptions.body);
+  }
+  const response = await fetch(path, { ...fetchOptions, headers });
   const contentType = response.headers.get("content-type") || "";
   let payload = {};
   if (contentType.includes("application/json")) {
@@ -311,6 +322,12 @@ async function api(path, options = {}) {
       ? payload.detail.map((item) => item.msg || item.message || JSON.stringify(item)).join(", ")
       : payload.detail;
     throw new Error(detail || `Request failed (${response.status})`);
+  }
+  if (method === "GET" && cacheMs) {
+    responseCache.set(cacheKey, { expires: Date.now() + cacheMs, payload });
+  }
+  if (method !== "GET") {
+    responseCache.clear();
   }
   return payload;
 }
@@ -361,8 +378,8 @@ function userName(user) {
   return full || user?.username || `User ${user?.telegram_id || ""}`;
 }
 
-async function loadDashboard() {
-  state.dashboard = await api("/api/dashboard");
+async function loadDashboard(force = false) {
+  state.dashboard = await api("/api/dashboard", { cacheMs: 12000, force });
   state.currency = state.dashboard.currency || state.currency || { code: "USD", symbol: "$", rate_from_base: 1 };
   state.currencies = state.dashboard.currencies || state.currencies || [];
   state.supportSettings = state.dashboard.support || state.supportSettings;
@@ -377,51 +394,45 @@ async function loadRouteData(route = state.route) {
   if (route === "home") await loadDashboard();
   if (route === "category" && state.categoryKey) {
     const [children, products] = await Promise.all([
-      api(`/api/categories?parent=${encodeURIComponent(state.categoryKey)}`),
-      api(`/api/products?category=${encodeURIComponent(state.categoryKey)}`),
+      api(`/api/categories?parent=${encodeURIComponent(state.categoryKey)}`, { cacheMs: 30000 }),
+      api(`/api/products?category=${encodeURIComponent(state.categoryKey)}`, { cacheMs: 12000 }),
     ]);
     state.categoryChildren = children.categories || [];
     state.categoryProducts = products.products || [];
   }
   if (route === "checkout") {
-    const methods = await api("/api/payment-methods");
+    const methods = await api("/api/payment-methods", { cacheMs: 20000 });
     state.methods = methods.methods || [];
     if (!state.selectedPaymentMethodId && state.methods.length) state.selectedPaymentMethodId = state.methods[0].id;
   }
   if (route === "wallet") {
-    const transactions = await api("/api/wallet/transactions");
+    const transactions = await api("/api/wallet/transactions", { cacheMs: 5000 });
     state.transactions = transactions.transactions || [];
   }
   if (route === "profile" || route === "add-balance") {
-    const [methods, payments, transactions, support, reseller] = await Promise.all([
-      api("/api/payment-methods"),
-      api("/api/payments"),
-      api("/api/wallet/transactions"),
-      api("/api/support-settings"),
-      api("/api/reseller-settings"),
-    ]);
-    state.methods = methods.methods || [];
+    const account = await api("/api/account", { cacheMs: 5000 });
+    state.methods = account.methods || [];
     if (!state.selectedPaymentMethodId && state.methods.length) state.selectedPaymentMethodId = state.methods[0].id;
-    state.payments = payments.payments || [];
-    state.transactions = transactions.transactions || [];
-    state.supportSettings = support.support || state.supportSettings;
-    state.resellerSettings = reseller.reseller || state.resellerSettings;
-    state.referrals = await api("/api/referrals").catch(() => state.referrals);
-    state.spin = await api("/api/spin").catch(() => state.spin);
+    state.payments = account.payments || [];
+    state.transactions = account.transactions || [];
+    state.supportSettings = account.support || state.supportSettings;
+    state.resellerSettings = account.reseller || state.resellerSettings;
+    state.referrals = account.referrals || state.referrals;
+    state.spin = account.spin || state.spin;
   }
   if (route === "orders") {
-    const data = await api("/api/orders");
+    const data = await api("/api/orders", { cacheMs: 5000 });
     state.orders = data.orders || [];
   }
   if (route === "referral") {
-    state.referrals = await api("/api/referrals");
+    state.referrals = await api("/api/referrals", { cacheMs: 5000 });
   }
   if (route === "coupon") {
-    const data = await api("/api/products");
+    const data = await api("/api/products", { cacheMs: 12000 });
     state.products = data.products || [];
   }
   if (route === "spin") {
-    state.spin = await api("/api/spin");
+    state.spin = await api("/api/spin", { cacheMs: 5000 });
   }
   if (route === "support") {
     const data = await api("/api/tickets");
@@ -444,20 +455,48 @@ async function loadRouteData(route = state.route) {
 
 async function setRoute(route) {
   state.route = route;
-  await loadRouteData(route);
+  state.loadingRoute = route;
   render();
+  try {
+    await loadRouteData(route);
+  } finally {
+    if (state.route === route) {
+      state.loadingRoute = "";
+      render();
+    }
+  }
 }
 
 async function openProduct(id) {
-  const data = await api(`/api/products/${id}`);
-  state.product = data.product;
-  state.selectedDuration = firstDuration(state.product);
+  const cached = [
+    ...(state.categoryProducts || []),
+    ...(state.products || []),
+    state.product,
+  ].filter(Boolean).find((product) => String(product.id) === String(id));
   state.route = "product";
+  state.loadingRoute = "product";
+  if (cached) {
+    state.product = cached;
+    state.selectedDuration = firstDuration(state.product);
+  }
   render();
+  try {
+    const data = await api(`/api/products/${id}`, { cacheMs: 8000 });
+    if (state.route !== "product" || String(data.product?.id) !== String(id)) return;
+    state.product = data.product;
+    state.selectedDuration = firstDuration(state.product);
+    state.loadingRoute = "";
+    render();
+  } catch (error) {
+    if (state.route === "product") state.loadingRoute = "";
+    throw error;
+  }
 }
 
 async function openCategory(key, name) {
   state.categoryKey = key || null;
+  state.categoryChildren = [];
+  state.categoryProducts = [];
   if (key) {
     if (state.route !== "category") state.categoryStack = [];
     const exists = state.categoryStack.find((item) => item.key === key);
@@ -1902,6 +1941,10 @@ function renderView() {
   return renderHome();
 }
 
+function loadingIndicator() {
+  return state.loadingRoute ? `<div class="route-loading"><span></span></div>` : "";
+}
+
 function syncTelegramControls() {
   if (tg?.BackButton) {
     if (!backButtonHandler) {
@@ -1931,7 +1974,7 @@ function syncTelegramControls() {
 }
 
 function render() {
-  root.innerHTML = `${topbar()}${bottomNav()}<main>${renderView()}</main>`;
+  root.innerHTML = `${topbar()}${bottomNav()}${loadingIndicator()}<main>${renderView()}</main>`;
   window.lucide?.createIcons();
   syncTelegramControls();
 }
@@ -1953,9 +1996,17 @@ async function openCheckout() {
   const coupon = document.querySelector("#buy-form [name='coupon_code']")?.value || "";
   state.checkout = { product: state.product, duration: state.selectedDuration, coupon_code: coupon };
   state.route = "checkout";
+  state.loadingRoute = "checkout";
   state.selectedPaymentMethodId = null;
-  await loadRouteData("checkout");
   render();
+  try {
+    await loadRouteData("checkout");
+  } finally {
+    if (state.route === "checkout") {
+      state.loadingRoute = "";
+      render();
+    }
+  }
 }
 
 async function submitOrder(form) {
@@ -1975,7 +2026,7 @@ async function submitOrder(form) {
     },
   });
   toast("Order placed");
-  await loadDashboard();
+  await loadDashboard(true);
   await setRoute("orders");
 }
 
@@ -2078,7 +2129,7 @@ document.addEventListener("click", async (event) => {
       state.spinResult = result.prize;
       state.spinAnimating = false;
       toast(`${result.prize.title}: ${money(result.prize.amount)}`);
-      await loadDashboard();
+      await loadDashboard(true);
       await loadRouteData("spin");
       render();
     }
@@ -2286,6 +2337,7 @@ document.addEventListener("click", async (event) => {
     }
   } catch (error) {
     state.spinAnimating = false;
+    state.loadingRoute = "";
     toast(error.message);
     render();
   }
@@ -2340,7 +2392,7 @@ document.addEventListener("submit", async (event) => {
       });
       state.currency = result.currency;
       state.session.user = result.user;
-      await loadDashboard();
+      await loadDashboard(true);
       toast("Currency updated");
       render();
     }
@@ -2627,8 +2679,9 @@ document.addEventListener("submit", async (event) => {
   } catch (error) {
     if (form.id === "ai-chat-form") {
       state.aiBusy = false;
-      render();
     }
+    state.loadingRoute = "";
+    render();
     toast(error.message);
   }
 });
