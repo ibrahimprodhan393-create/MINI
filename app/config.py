@@ -25,6 +25,7 @@ class Settings:
     bot_token = os.getenv("BOT_TOKEN", "")
     bot_username = os.getenv("BOT_USERNAME", "")
     mini_app_short_name = os.getenv("MINI_APP_SHORT_NAME", "")
+    telegram_menu_button_text = os.getenv("TELEGRAM_MENU_BUTTON_TEXT", "📱 Open Panel")
     telegram_webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
     auto_payment_webhook_secret = os.getenv("AUTO_PAYMENT_WEBHOOK_SECRET", "")
     admin_telegram_ids = _int_list(os.getenv("ADMIN_TELEGRAM_IDS"))

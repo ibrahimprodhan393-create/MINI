@@ -7,6 +7,30 @@ class TelegramNotifier:
     def __init__(self) -> None:
         self.enabled = bool(settings.bot_token)
 
+    def web_app_menu_button(self) -> dict:
+        return {
+            "type": "web_app",
+            "text": settings.telegram_menu_button_text,
+            "web_app": {"url": settings.public_app_url},
+        }
+
+    def web_app_reply_keyboard(self, styled: bool = True) -> dict:
+        button = {
+            "text": settings.telegram_menu_button_text,
+            "web_app": {"url": settings.public_app_url},
+        }
+        if styled:
+            button["style"] = "primary"
+        return {
+            "keyboard": [
+                [button]
+            ],
+            "resize_keyboard": True,
+            "one_time_keyboard": False,
+            "is_persistent": True,
+            "input_field_placeholder": "Tap Open Panel",
+        }
+
     async def call_api(self, method: str, payload: dict) -> dict:
         if not self.enabled:
             return {"ok": False, "description": "BOT_TOKEN is not configured."}
@@ -15,6 +39,17 @@ class TelegramNotifier:
             response = await client.post(url, json=payload)
             response.raise_for_status()
             return response.json()
+
+    async def configure_menu_button(self, chat_id: int | None = None) -> None:
+        if not self.enabled or not settings.public_app_url:
+            return
+        payload: dict = {"menu_button": self.web_app_menu_button()}
+        if chat_id:
+            payload["chat_id"] = chat_id
+        try:
+            await self.call_api("setChatMenuButton", payload)
+        except httpx.HTTPError:
+            return
 
     async def send_message(self, chat_id: int, text: str) -> None:
         if not self.enabled or not chat_id:
@@ -38,24 +73,20 @@ class TelegramNotifier:
         if not settings.public_app_url:
             await self.send_message(chat_id, "Mini App URL is not configured yet.")
             return
+        payload = {
+            "chat_id": chat_id,
+            "text": "Welcome to the store. Tap Open Panel from the menu bar to open the Mini App.",
+            "reply_markup": self.web_app_reply_keyboard(),
+        }
         try:
-            await self.call_api(
-                "sendMessage",
-                {
-                    "chat_id": chat_id,
-                    "text": "Welcome to the store. Tap the button below to open the Mini App.",
-                    "reply_markup": {
-                        "inline_keyboard": [
-                            [
-                                {
-                                    "text": "Open Store",
-                                    "web_app": {"url": settings.public_app_url},
-                                }
-                            ]
-                        ]
-                    },
-                },
-            )
+            await self.configure_menu_button(chat_id)
+            await self.call_api("sendMessage", payload)
+        except httpx.HTTPStatusError:
+            try:
+                payload["reply_markup"] = self.web_app_reply_keyboard(styled=False)
+                await self.call_api("sendMessage", payload)
+            except httpx.HTTPError:
+                return
         except httpx.HTTPError:
             return
 

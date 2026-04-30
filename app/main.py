@@ -1860,6 +1860,7 @@ async def startup() -> None:
     await connect_db()
     if settings.database_url:
         await run_schema()
+    await notifier.configure_menu_button()
 
 
 @app.on_event("shutdown")
