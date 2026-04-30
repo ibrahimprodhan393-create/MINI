@@ -14,21 +14,16 @@ class TelegramNotifier:
             "web_app": {"url": settings.public_app_url},
         }
 
-    def web_app_reply_keyboard(self, styled: bool = True) -> dict:
-        button = {
-            "text": settings.telegram_menu_button_text,
-            "web_app": {"url": settings.public_app_url},
-        }
-        if styled:
-            button["style"] = "primary"
+    def web_app_inline_keyboard(self) -> dict:
         return {
-            "keyboard": [
-                [button]
-            ],
-            "resize_keyboard": True,
-            "one_time_keyboard": False,
-            "is_persistent": True,
-            "input_field_placeholder": "Tap Open Panel",
+            "inline_keyboard": [
+                [
+                    {
+                        "text": settings.telegram_menu_button_text,
+                        "web_app": {"url": settings.public_app_url},
+                    }
+                ]
+            ]
         }
 
     async def call_api(self, method: str, payload: dict) -> dict:
@@ -48,6 +43,24 @@ class TelegramNotifier:
             payload["chat_id"] = chat_id
         try:
             await self.call_api("setChatMenuButton", payload)
+        except httpx.HTTPError:
+            return
+
+    async def remove_reply_keyboard(self, chat_id: int) -> None:
+        if not self.enabled or not chat_id:
+            return
+        try:
+            response = await self.call_api(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": "Menu updated.",
+                    "reply_markup": {"remove_keyboard": True},
+                },
+            )
+            message_id = response.get("result", {}).get("message_id")
+            if message_id:
+                await self.call_api("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
         except httpx.HTTPError:
             return
 
@@ -75,18 +88,13 @@ class TelegramNotifier:
             return
         payload = {
             "chat_id": chat_id,
-            "text": "Welcome to the store. Tap Open Panel from the menu bar to open the Mini App.",
-            "reply_markup": self.web_app_reply_keyboard(),
+            "text": "Welcome to the store. Tap the button below to open the Mini App.",
+            "reply_markup": self.web_app_inline_keyboard(),
         }
         try:
             await self.configure_menu_button(chat_id)
+            await self.remove_reply_keyboard(chat_id)
             await self.call_api("sendMessage", payload)
-        except httpx.HTTPStatusError:
-            try:
-                payload["reply_markup"] = self.web_app_reply_keyboard(styled=False)
-                await self.call_api("sendMessage", payload)
-            except httpx.HTTPError:
-                return
         except httpx.HTTPError:
             return
 

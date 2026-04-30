@@ -13,7 +13,7 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
 - Product key store: admins upload/delete keys, file links, or panel login lines for each custom duration bucket
 - Wallet: add balance request, payment method, transaction ID, screenshot upload
 - Account screen: add fund, payment details, payment request status, realistic daily spin, language, referral dashboard, support, profile, currency, reseller apply
-- Telegram chat menu: `/start` sets an Open Panel Mini App button in the bot menu and persistent keyboard bar
+- Telegram chat menu: `/start` sets the side menu button and sends an inline Open Panel Mini App button under the welcome message
 - Add Fund shows admin payment methods as selectable cards, opens payment address/details with copy button, then submits amount and screenshot
 - ACI AI asks users to select an AI language first, can use an OpenAI-compatible API for general questions, and falls back to built-in store answers
 - AI Assistant reads payment history from `payment_requests`, the same table used by wallet payment submissions
@@ -103,7 +103,7 @@ Telegram Mini App for selling digital products with wallet balance, payment appr
    ```
 
    After this, `/start` in Telegram sends the Mini App keyboard button.
-   It also sets the bot menu button and the persistent keyboard bar to `TELEGRAM_MENU_BUTTON_TEXT`, for example `📱 Open Panel`.
+   It also sets the side menu button to `TELEGRAM_MENU_BUTTON_TEXT`, for example `📱 Open Panel`.
 
 ## Admin Access
 
